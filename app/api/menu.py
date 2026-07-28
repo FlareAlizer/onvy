@@ -121,9 +121,13 @@ async def update_menu_item(
     require_own_venue(current, venue_id)
     changes = payload.model_dump(exclude_unset=True)
     if "name" in changes and changes["name"] is None:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Название не может быть null")
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Название не может быть null"
+        )
     if "price" in changes and changes["price"] is None:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Цена не может быть null")
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Цена не может быть null"
+        )
     if "allergens" in changes and changes["allergens"] is not None:
         changes["allergens"] = tuple(changes["allergens"])
 
@@ -174,6 +178,7 @@ async def import_menu(
     с «;»). Пустая ячейка техкарты значит «данных нет»; для аллергенов явное
     слово «нет» — это «аллергенов нет» (проверено), а не то же самое, что пусто.
     """
+    require_own_venue(current, venue_id)
     raw = await file.read()
     try:
         plan = await menu_service.import_menu_csv(db, venue_id, raw, dry_run=dry_run)

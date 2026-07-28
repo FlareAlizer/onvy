@@ -40,6 +40,17 @@
 }
 .animate-pulse-ring { animation: pulse-ring 2.5s cubic-bezier(0.25, 0, 0, 1) infinite; }
 
+/* Неверный PIN на экране входа (spec: понятная, не пугающая ошибка) — короткая
+   встряска вместо текста красным крупными буквами. transform-only, 250мс. */
+@keyframes shake-x {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-8px); }
+  40% { transform: translateX(7px); }
+  60% { transform: translateX(-5px); }
+  80% { transform: translateX(3px); }
+}
+.animate-shake-x { animation: shake-x 0.25s ease-out; }
+
 @media (prefers-reduced-motion: reduce) {
-  .animate-pulse-ring, .animate-pulse, .animate-spin { animation: none; }
+  .animate-pulse-ring, .animate-pulse, .animate-spin, .animate-shake-x { animation: none; }
 }

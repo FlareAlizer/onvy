@@ -12,7 +12,7 @@ S4 требует, чтобы действие управляющего зани
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.menu import _check_venue
+from app.api.menu import require_own_venue
 from app.db import get_session
 from app.db.models.stop_list_entry import StopListEntry
 from app.deps import CurrentEmployee, require_employee, require_manager
@@ -42,7 +42,7 @@ async def active_stop_list(
     db: AsyncSession = Depends(get_session),
 ) -> list[StopListEntryOut]:
     """Что сейчас снято с продажи — видно любому сотруднику точки."""
-    _check_venue(current, venue_id)
+    require_own_venue(current, venue_id)
     rows = await menu_service.stop_list_view(db, venue_id, history=False)
     return [_map_entry(entry, name) for entry, name in rows]
 
@@ -56,14 +56,16 @@ async def stop_list_history(
     db: AsyncSession = Depends(get_session),
 ) -> list[StopListEntryOut]:
     """Полная история постановок/снятий — аналитика пилота (spec §4 S6), только управляющий."""
-    _check_venue(current, venue_id)
+    require_own_venue(current, venue_id)
     rows = await menu_service.stop_list_view(
         db, venue_id, history=True, menu_item_id=menu_item_id, limit=limit
     )
     return [_map_entry(entry, name) for entry, name in rows]
 
 
-@router.post("/{menu_item_id}/set", response_model=StopListEntryOut, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/{menu_item_id}/set", response_model=StopListEntryOut, status_code=status.HTTP_201_CREATED
+)
 async def set_stop(
     venue_id: int,
     menu_item_id: int,
@@ -73,7 +75,7 @@ async def set_stop(
 ) -> StopListEntryOut:
     """Поставить позицию в стоп. Идемпотентно: повторный вызов на уже стоящей
     позиции не плодит вторую запись — возвращает существующую."""
-    _check_venue(current, venue_id)
+    require_own_venue(current, venue_id)
     try:
         entry = await menu_service.set_stop(
             db,
@@ -85,7 +87,9 @@ async def set_stop(
     except menu_service.MenuItemNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Позиция не найдена") from exc
     await db.commit()
-    rows = await menu_service.stop_list_view(db, venue_id, history=True, menu_item_id=menu_item_id, limit=1)
+    rows = await menu_service.stop_list_view(
+        db, venue_id, history=True, menu_item_id=menu_item_id, limit=1
+    )
     name = rows[0][1] if rows else ""
     return _map_entry(entry, name)
 
@@ -99,7 +103,7 @@ async def unset_stop(
 ) -> StopListEntryOut:
     """Снять позицию со стопа. Если позиция сейчас не в стопе — 409, а не тихий успех:
     управляющий должен видеть, что нажатие ни на что не повлияло."""
-    _check_venue(current, venue_id)
+    require_own_venue(current, venue_id)
     try:
         entry = await menu_service.unset_stop(
             db, venue_id=venue_id, menu_item_id=menu_item_id, employee_id=current.id
@@ -109,6 +113,8 @@ async def unset_stop(
     except menu_service.NotOnStopListError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     await db.commit()
-    rows = await menu_service.stop_list_view(db, venue_id, history=True, menu_item_id=menu_item_id, limit=1)
+    rows = await menu_service.stop_list_view(
+        db, venue_id, history=True, menu_item_id=menu_item_id, limit=1
+    )
     name = rows[0][1] if rows else ""
     return _map_entry(entry, name)

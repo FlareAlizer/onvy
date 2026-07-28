@@ -92,6 +92,23 @@ async def resolve_group(
             .all()
         )
         candidate_ids = online & set(members)
+        # Управляющий по спеке слышит всё, что происходит на смене, независимо
+        # от того, состоит ли он в этой группе. Иначе он узнаёт о проблеме в зале
+        # последним — ровно от той роли, ради которой покупают продукт.
+        managers = (
+            (
+                await db.execute(
+                    select(Employee.id).where(
+                        Employee.venue_id == venue_id,
+                        Employee.role == "manager",
+                        Employee.id.in_(online),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        candidate_ids = candidate_ids | set(managers)
 
     if not candidate_ids:
         return [], group_id

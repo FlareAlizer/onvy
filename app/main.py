@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 
 from app.adapters.gigaam.speech import GigaAMSpeechRecognition
-from app.api import auth, comms, voice
+from app.api import auth, comms, insights, menu, stop_list, voice
 from app.config import settings
 from app.services import runtime
 
@@ -53,7 +53,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-for module in (auth, voice, comms):
+for module in (auth, voice, comms, menu, stop_list, insights):
     app.include_router(module.router, prefix="/api")
 
 

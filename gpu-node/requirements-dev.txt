@@ -1,0 +1,9 @@
+# Только для локальных тестов gpu-node/tests/ — НЕ копируется в Dockerfile,
+# не нужен на самой GPU-ноде. Намеренно НЕ тянет requirements.txt целиком:
+# torch/torchaudio там — CUDA-сборки на несколько GB, а тесты их не грузят
+# (app.py импортирует torch/transformers только внутри lifespan, тесты его не
+# запускают — model подменяется заглушкой, см. gpu-node/tests/test_app.py).
+# Прогоняются на любой машине без GPU и без риска перекачать пол-CUDA впустую.
+fastapi==0.140.10
+httpx==0.28.1
+pytest==9.1.1

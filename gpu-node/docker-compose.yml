@@ -1,0 +1,40 @@
+# GPU-нода — отдельный docker compose, крутится на арендованной GPU-машине,
+# НЕ на основном VPS. Запускать из этой директории:
+#   cd gpu-node && cp .env.example .env && nano .env && docker compose up -d --build
+#
+# Требует на хосте: NVIDIA-драйвер, совместимый с CUDA 12.6, и
+# nvidia-container-toolkit (см. docs/runbook-gpu-node.md — без этого GPU
+# внутрь контейнера не пробросится и модель ляжет на CPU).
+
+name: onvy-gigaam
+
+services:
+  gigaam:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        GIGAAM_REVISION: ${GIGAAM_REVISION:-ctc}
+    image: onvy-gigaam:latest
+    restart: unless-stopped
+    environment:
+      GIGAAM_REVISION: ${GIGAAM_REVISION:-ctc}
+    ports:
+      # ВАЖНО: не 0.0.0.0. По умолчанию — только localhost этой машины, сервис
+      # без авторизации, наружу его светить нельзя. GIGAAM_BIND_HOST должен
+      # смотреть на приватный интерфейс (WireGuard/VLAN) в сторону основного
+      # API, не на публичный. См. docs/runbook-gpu-node.md, раздел "Сеть".
+      - "${GIGAAM_BIND_HOST:-127.0.0.1}:8000:8000"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else sys.exit(1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: ["gpu"]

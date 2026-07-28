@@ -32,6 +32,12 @@ class Employee(TimestampMixin, SoftDeleteMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     venue_id: Mapped[int] = mapped_column(ForeignKey("venues.id", ondelete="RESTRICT"), index=True)
     name: Mapped[str] = mapped_column(String(120))
+    # Короткая кличка на смене ("Азиз" при полном имени "Азизбек Рахматуллаев") —
+    # голосовая маршрутизация (app/domain/intents.py, Colleague) ищет обращение
+    # по ней в первую очередь: распознавание в шуме справляется с кличкой
+    # заметно лучше, чем с длинным полным именем. NULL — клички нет, обращение
+    # ищут по первому слову name (см. Colleague.spoken_forms).
+    nickname: Mapped[str | None] = mapped_column(String(60), nullable=True)
     role: Mapped[str] = mapped_column(String(20))
     # Язык сотрудника: на нём он говорит и слышит перевод/TTS-подсказки.
     language: Mapped[str] = mapped_column(String(8), default="ru")
