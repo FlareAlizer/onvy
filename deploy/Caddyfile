@@ -1,0 +1,38 @@
+# Onvy — Caddy reverse proxy with automatic Let's Encrypt TLS.
+# HTTPS is a hard requirement here: getUserMedia() (mic access for PTT) is
+# refused by browsers on plain HTTP for any host but localhost.
+#
+# {$DOMAIN} / {$CADDY_EMAIL} come from the environment (deploy/docker-compose.yml
+# passes them through). DOMAIN must already point at this server's IP (A/AAAA
+# record) before the container starts, or ACME issuance fails.
+
+{
+	email {$CADDY_EMAIL}
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# reverse_proxy handles the WebSocket upgrade (Connection/Upgrade headers)
+	# transparently — the radio's persistent WS connections need no extra
+	# directive here, just the same proxy target as regular HTTP.
+	reverse_proxy api:8000 {
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# Same-origin app: SPA assets, API and WS all live on {$DOMAIN}.
+		# 'unsafe-inline' on style-src is required by Framer Motion, which
+		# animates via inline style="" attributes, not <style> tags.
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob: data:; connect-src 'self' wss:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+		-Server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

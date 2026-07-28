@@ -1,0 +1,106 @@
+# Onvy — production compose. Run from the repo root on the VPS:
+#   docker compose -f deploy/docker-compose.yml --env-file .env up -d
+#
+# Migrations are NOT run on api startup (race with multiple workers/replicas).
+# Run them explicitly before rolling api forward — see scripts/deploy.sh and
+# docs/runbook-deploy.md ("migrate" one-off service below).
+
+name: onvy
+
+x-api-image: &api-image
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+  image: onvy-api:latest
+
+services:
+  postgres:
+    image: postgres:16.14-alpine@sha256:7a396fd264a2067788b6551122b50f162bf6136312c7fc9d74381cb92c648382
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER не задан}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан}
+      POSTGRES_DB: ${POSTGRES_DB:-onvy}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-onvy} -d ${POSTGRES_DB:-onvy}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks: [onvy]
+
+  redis:
+    image: redis:7.4.10-alpine@sha256:9702d01c1f10c3ea9f48211b4362e44f154ff02d063e6f7268eba804059f53bf
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks: [onvy]
+
+  # One-off: `docker compose -f deploy/docker-compose.yml --env-file .env run --rm migrate`
+  # Never part of `up` — kept out of the default start order on purpose.
+  migrate:
+    <<: *api-image
+    profiles: ["tools"]
+    env_file:
+      - ../.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["alembic"]
+    command: ["upgrade", "head"]
+    networks: [onvy]
+
+  api:
+    <<: *api-image
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).status == 200 else sys.exit(1)"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks: [onvy]
+
+  caddy:
+    image: caddy:2.11.4-alpine@sha256:98eb57d882ccd5213d1688764db10c1ca2c58a1ca3a6717a3411ad798f7a423a
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3 (QUIC)
+    environment:
+      DOMAIN: ${DOMAIN:?DOMAIN не задан — нужен для выпуска TLS-сертификата}
+      CADDY_EMAIL: ${CADDY_EMAIL:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [onvy]
+
+networks:
+  onvy:
+
+volumes:
+  pg_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
