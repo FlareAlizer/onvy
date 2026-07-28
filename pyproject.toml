@@ -39,3 +39,10 @@ extend-ignore = ["B008"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Только тесты приложения. У GPU-ноды свой пакет app/ и свой pytest.ini:
+# без этой строки голый `pytest` собирает обе директории в одном процессе,
+# два разных пакета с именем app сталкиваются, и сбор падает целиком.
+testpaths = ["tests"]
+markers = [
+    "needs_db: требует живой PostgreSQL — пропускается, если базы нет",
+]
