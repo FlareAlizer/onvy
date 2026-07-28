@@ -1,19 +1,31 @@
-// Клиент API Onvy: сессия в localStorage + fetch с ключом + WebSocket-URL.
+// Клиент API Onvy: JWT-сессия, автоматическое обновление токена, вебсокет по тикету.
+//
+// Токен живёт полчаса, смена — двенадцать. Значит обновление должно быть
+// незаметным: официант не может оказаться разлогиненным посреди зала.
+// Поэтому любой 401 один раз пробует refresh и повторяет запрос.
 
-import type { Session } from '../types';
+export type Session = {
+  accessToken: string;
+  refreshToken: string;
+  employeeId: number;
+  venueId: number;
+  role: string;
+  name: string;
+  language: string;
+};
 
 const KEY = 'onvy_session';
 
-export function saveSession(s: Session): void {
-  localStorage.setItem(KEY, JSON.stringify(s));
+export function saveSession(session: Session): void {
+  localStorage.setItem(KEY, JSON.stringify(session));
 }
 
 export function getSession(): Session | null {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return null;
-    const s = JSON.parse(raw);
-    return s && s.apiKey && s.employeeId ? (s as Session) : null;
+    const parsed = JSON.parse(raw) as Session;
+    return parsed?.accessToken && parsed?.employeeId ? parsed : null;
   } catch {
     return null;
   }
@@ -23,58 +35,136 @@ export function clearSession(): void {
   localStorage.removeItem(KEY);
 }
 
-function headers(extra: Record<string, string> = {}): Record<string, string> {
-  const s = getSession();
-  return { 'X-API-Key': s?.apiKey ?? '', ...extra };
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
 }
 
-/** JSON-запрос к API. Бросает Error с текстом ответа при не-2xx. */
-export async function api<T = unknown>(path: string, opts: RequestInit = {}): Promise<T> {
-  const resp = await fetch(`/api${path}`, {
-    ...opts,
-    headers: headers({ 'Content-Type': 'application/json', ...(opts.headers as Record<string, string>) }),
+async function readError(resp: Response): Promise<string> {
+  try {
+    const body = await resp.json();
+    return typeof body?.detail === 'string' ? body.detail : resp.statusText;
+  } catch {
+    return resp.statusText || String(resp.status);
+  }
+}
+
+/** Обновить пару токенов. Возвращает false, если сессия окончательно мертва. */
+async function refreshSession(): Promise<boolean> {
+  const session = getSession();
+  if (!session) return false;
+  const resp = await fetch('/api/auth/refresh', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refresh_token: session.refreshToken }),
   });
-  if (!resp.ok) throw new Error((await resp.text()) || String(resp.status));
+  if (!resp.ok) {
+    clearSession();
+    return false;
+  }
+  const tokens = await resp.json();
+  saveSession({
+    ...session,
+    accessToken: tokens.access_token,
+    refreshToken: tokens.refresh_token,
+  });
+  return true;
+}
+
+type RequestOptions = RequestInit & { retryOnAuthFailure?: boolean };
+
+async function request(path: string, options: RequestOptions = {}): Promise<Response> {
+  const { retryOnAuthFailure = true, ...init } = options;
+  const session = getSession();
+  const headers = new Headers(init.headers);
+  if (session) headers.set('Authorization', `Bearer ${session.accessToken}`);
+
+  const resp = await fetch(`/api${path}`, { ...init, headers });
+  if (resp.status !== 401 || !retryOnAuthFailure) return resp;
+
+  // Токен протух посреди смены — обновляем и повторяем ровно один раз.
+  if (!(await refreshSession())) return resp;
+  return request(path, { ...options, retryOnAuthFailure: false });
+}
+
+export async function api<T = unknown>(path: string, options: RequestOptions = {}): Promise<T> {
+  const headers = new Headers(options.headers);
+  if (options.body && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+  const resp = await request(path, { ...options, headers });
+  if (!resp.ok) throw new ApiError(await readError(resp), resp.status);
   return resp.status === 204 ? (null as T) : ((await resp.json()) as T);
 }
 
-/** Логин без сессии (ключ передаётся явно — сессии ещё нет). */
-export async function apiWithKey<T>(apiKey: string, path: string, opts: RequestInit = {}): Promise<T> {
-  const resp = await fetch(`/api${path}`, {
-    ...opts,
-    headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
-  });
-  if (!resp.ok) throw new Error((await resp.text()) || String(resp.status));
+/** Запрос без сессии — экран входа. */
+export async function apiPublic<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const headers = new Headers(options.headers);
+  if (options.body && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+  const resp = await fetch(`/api${path}`, { ...options, headers });
+  if (!resp.ok) throw new ApiError(await readError(resp), resp.status);
   return (await resp.json()) as T;
 }
 
-/** Отправка аудио (multipart) с доп. полями. */
-export async function postAudio<T>(path: string, blob: Blob, fields: Record<string, string | number | null> = {}): Promise<T> {
+export type StageMetrics = {
+  asr_ms: number;
+  search_ms: number;
+  answer_ms: number;
+  tts_ms: number;
+  total_ms: number;
+};
+
+export type VoiceResult = {
+  intent: 'ask' | 'send_group' | 'send_person' | 'empty' | 'ignored';
+  query_text: string;
+  answer_text: string;
+  audio_base64: string | null;
+  mime_type: string;
+  grounded_on: string[];
+  degraded: 'asr' | 'answer' | 'tts' | null;
+  delivered_to: number[];
+  group: string | null;
+  person_name: string | null;
+  metrics: StageMetrics;
+};
+
+/** Отправить запись с кнопки. */
+export async function sendVoice(blob: Blob, alwaysOn = false): Promise<VoiceResult> {
   const form = new FormData();
   form.append('audio', blob, 'clip.pcm');
-  for (const [k, v] of Object.entries(fields)) {
-    if (v !== null && v !== undefined && v !== '') form.append(k, String(v));
-  }
-  const resp = await fetch(`/api${path}`, { method: 'POST', headers: headers(), body: form });
-  if (!resp.ok) throw new Error((await resp.text()) || String(resp.status));
-  return (await resp.json()) as T;
+  form.append('always_on', String(alwaysOn));
+  const resp = await request('/voice/push-to-talk', { method: 'POST', body: form });
+  if (!resp.ok) throw new ApiError(await readError(resp), resp.status);
+  return (await resp.json()) as VoiceResult;
 }
 
-/** Сырой GET (SVG QR-кода). */
-export async function apiRaw(path: string): Promise<string> {
-  const resp = await fetch(`/api${path}`, { headers: headers() });
-  if (!resp.ok) throw new Error((await resp.text()) || String(resp.status));
-  return resp.text();
-}
-
-/** URL WebSocket-канала доставки реплик. */
-export function commsWsUrl(): string {
-  const s = getSession();
+/** Открыть канал рации. Тикет одноразовый и живёт меньше минуты. */
+export async function openCommsSocket(): Promise<WebSocket> {
+  const { ticket } = await api<{ ticket: string }>('/auth/ws-ticket', { method: 'POST' });
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  return `${proto}://${location.host}/api/ws/comms/${s?.employeeId}?api_key=${encodeURIComponent(s?.apiKey ?? '')}`;
+  return new WebSocket(`${proto}://${location.host}/api/ws/comms?ticket=${encodeURIComponent(ticket)}`);
 }
 
-/** Проиграть base64-MP3 (ответ ассистента / голос коллеги). */
-export function playBase64Mp3(b64: string): void {
-  void new Audio(`data:audio/mp3;base64,${b64}`).play().catch(() => {});
+export type IncomingMessage = {
+  type: 'voice' | 'text';
+  utterance_id: number;
+  from_id: number;
+  from_name: string;
+  text: string;
+  language: string;
+  translated: boolean;
+  translation_failed: boolean;
+  audio_base64: string | null;
+  mime_type: string;
+};
+
+/** Проиграть ответ ассистента или голос коллеги. */
+export function playAudio(base64: string, mime = 'audio/mpeg'): Promise<void> {
+  return new Audio(`data:${mime};base64,${base64}`).play().catch(() => undefined);
 }
