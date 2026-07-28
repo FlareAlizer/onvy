@@ -7,7 +7,7 @@
 
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.domain.language import Language
@@ -59,7 +59,11 @@ class Settings(BaseSettings):
     # голос сотрудников, тем меньше правовой и репутационный риск.
     audio_retention_days: int = 7
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    # extra="ignore": в .env остаются переменные от прошлых версий и от смежных
+    # инструментов — падать из-за них на старте неправильно, это не ошибка конфига.
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
     @property
     def yandex_enabled(self) -> bool:

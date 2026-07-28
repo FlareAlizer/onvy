@@ -1,0 +1,43 @@
+# Build context is the repo root (see deploy/Dockerfile). Keep this list tight
+# so cache invalidation is driven by real source changes, not junk.
+
+.git
+.github
+.claude
+.claude-flow
+.swarm
+.hive-mind
+memory
+
+# Python
+.venv
+venv
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.ruff_cache
+.mypy_cache
+app.db
+*.db
+*.sqlite3
+
+# Frontend — rebuilt inside the image, never copy host artifacts in
+frontend/node_modules
+frontend/dist
+
+# Docs / specs / misc — not needed at runtime
+docs
+specs
+tests
+*.pdf
+*.md
+run_demo.*
+
+# Env / secrets — never bake into the image
+.env
+.env.*
+!deploy/.env.example
+*.pem
+id_rsa*
+secrets*
