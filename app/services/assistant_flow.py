@@ -12,7 +12,7 @@
 import logging
 from dataclasses import dataclass, field
 
-from app.domain.intents import Group, Intent, IntentKind, parse
+from app.domain.intents import Colleague, Group, Intent, IntentKind, parse
 from app.domain.language import Language
 from app.domain.menu_search import search
 from app.ports.answer import AnswerPort, AnswerUnavailable
@@ -72,7 +72,7 @@ async def handle_voice_query(
     language: Language,
     menu: list[MenuItemData],
     stopped: frozenset[str],
-    members: list[tuple[int, str]],
+    colleagues: list[Colleague],
     recognition: SpeechRecognitionPort,
     answering: AnswerPort,
     synthesis: SpeechSynthesisPort,
@@ -95,7 +95,7 @@ async def handle_voice_query(
 
     metrics.asr_ms = recognized.duration_ms
     intent = parse(
-        recognized.text, members=members, require_wake_word=require_wake_word
+        recognized.text, colleagues=colleagues, require_wake_word=require_wake_word
     )
 
     # Режим постоянного прослушивания: обращения не было, молчим и не тратим стек.
@@ -106,6 +106,18 @@ async def handle_voice_query(
 
     # Реплику в рацию озвучивать ассистентом не надо — её доставит служба связи.
     if intent.kind in (IntentKind.SEND_GROUP, IntentKind.SEND_PERSON):
+        if not intent.payload:
+            # Адресата назвали, а что передать — нет. Переспрашиваем голосом,
+            # иначе коллеге уйдёт пустая реплика.
+            addressee = intent.person_name or (intent.group.value if intent.group else "")
+            return await _speak_only(
+                f"Что передать: {addressee}?" if addressee else NOTHING_HEARD,
+                language,
+                synthesis,
+                metrics,
+                kind=IntentKind.EMPTY,
+                query_text=recognized.text,
+            )
         return _to_comms(intent, recognized.text, metrics)
 
     if intent.kind is IntentKind.EMPTY:

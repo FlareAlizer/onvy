@@ -8,13 +8,16 @@
 from decimal import Decimal
 
 from app.adapters.fakes import FakeAnswer, FakeRecognition, FakeSynthesis
-from app.domain.intents import Group, IntentKind
+from app.domain.intents import Colleague, Group, IntentKind
 from app.ports.menu import MenuItemData
 from app.services import assistant_flow
 from app.services.assistant_flow import handle_voice_query
 
 AUDIO = b"\x00" * 3200
-КОЛЛЕГИ = [(1, "Азиз"), (2, "Улугбек")]
+КОЛЛЕГИ = [
+    Colleague(id=1, name="Азизбек Рахматуллаев", nickname="Азиз"),
+    Colleague(id=2, name="Улугбек Каримов", nickname="Шеф"),
+]
 
 МЕНЮ = [
     MenuItemData(
@@ -54,7 +57,7 @@ async def выполнить(**переопределения):
         language="ru",
         menu=МЕНЮ,
         stopped=frozenset(),
-        members=КОЛЛЕГИ,
+        colleagues=КОЛЛЕГИ,
         **стенд,
     )
 
@@ -145,7 +148,7 @@ class TestПостоянноеПрослушивание:
             language="ru",
             menu=МЕНЮ,
             stopped=frozenset(),
-            members=КОЛЛЕГИ,
+            colleagues=КОЛЛЕГИ,
             require_wake_word=True,
             **стенд,
         )
@@ -166,7 +169,7 @@ class TestСтопЛист:
             language="ru",
             menu=МЕНЮ,
             stopped=frozenset({"lagman"}),
-            members=КОЛЛЕГИ,
+            colleagues=КОЛЛЕГИ,
             recognition=FakeRecognition(
                 text="Онви, есть лагман", languages=frozenset({"ru"})
             ),

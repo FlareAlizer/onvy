@@ -54,7 +54,7 @@ async def push_to_talk(
         language=language,
         menu=menu,
         stopped=stopped,
-        members=colleagues,
+        colleagues=colleagues,
         recognition=adapters.recognition(),
         answering=adapters.answering(),
         synthesis=adapters.synthesis(),

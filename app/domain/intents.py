@@ -1,56 +1,75 @@
-"""Разбор голосовой команды: вопрос ассистенту или реплика в рацию.
+"""Кому адресована фраза: ассистенту или коллеге.
 
-Чистая логика без базы и без сети — её легко проверить тестами и легко чинить,
-когда живое распознавание начнёт присылать неожиданное.
+Это решение принимается по одной распознанной строке, без переспросов — в зале
+некогда уточнять. Правила выведены из того, как люди реально говорят на смене:
 
-Что здесь важно понимать про реальность: STT ошибается на имени ассистента и на
-падежах. Поэтому и вейк-ворд, и адресат группы ищутся по основам слов, а не по
-точному совпадению.
+    «что в составе лагмана»          → вопрос ассистенту
+    «кухня, два лагмана без острого» → реплика на кухню, обращение в начале
+    «Азиз, подойди на третий»        → реплика Азизу по кличке
+    «скажи бару два чая»             → реплика в бар через глагол
+    «спроси у кухни есть ли баранина»→ вопрос кухне, а не ассистенту
+    «что там в баре из напитков»     → вопрос ассистенту: «бар» упомянут, но
+                                       это не обращение
+
+Отсюда два признака обращения: слово-адресат стоит в начале фразы (звательный
+падеж, как в живой речи) либо идёт сразу за глаголом обращения. Упоминание
+отдела в середине вопроса обращением не считается — иначе половина вопросов про
+меню улетала бы коллегам.
+
+Имена сравниваются нестрого: распознавание в шуме коверкает их постоянно,
+поэтому у каждого сотрудника есть короткая кличка, а сравнение терпит падеж и
+одну ошибку распознавания (см. app/domain/text.py).
 """
 
-import re
 from dataclasses import dataclass
 from enum import StrEnum
+
+from app.domain.text import normalize, sounds_like, words
 
 # --- Вейк-ворд ---
 
 # Живой STT пишет «Онви» по-разному: Онви, Анви, Энви, Онвий, «он ви».
-# Регэксп: [о|а|э] + нв + [и|ы|е] + опциональное «й». Имена вроде «Анвар» не матчит.
-_WAKE_RE = re.compile(r"^[оаэ]нв(?:и|ы|е)й?$")
+_WAKE_VARIANTS = ("онви", "анви", "энви", "онвы", "анвы", "энвы", "онвий", "анвий")
 _WAKE_LATIN = frozenset({"onvi", "onvy", "envy", "anvi", "anvy"})
 
 
 def _is_wake_token(token: str) -> bool:
-    return bool(_WAKE_RE.match(token)) or token in _WAKE_LATIN
+    if token in _WAKE_LATIN or token in _WAKE_VARIANTS:
+        return True
+    # «Онвию», «Онвика» — окончание переживём, но «Анвар» не должен пройти.
+    return len(token) >= 4 and token[:4] in {"онви", "анви", "энви", "онвы"}
 
 
 def detect_wake_word(text: str) -> tuple[bool, str]:
-    """Найти обращение «Онви» в начале реплики и отрезать его.
-
-    Ищем среди первых трёх слов: одиночный вариант («Анви») или склейку соседних
-    («он ви»). Возвращает (было ли обращение, текст без него).
-    """
-    tokens = re.findall(r"\w+", text.strip())
+    """Найти обращение «Онви» в начале реплики и отрезать его."""
+    raw = text.strip()
+    tokens = words(raw)
+    original = _original_words(raw)
     if not tokens:
         return False, ""
-    norm = [t.lower().replace("ё", "е") for t in tokens[:3]]
 
-    for i, token in enumerate(norm):
+    for index, token in enumerate(tokens[:3]):
         if _is_wake_token(token):
-            return True, " ".join(tokens[i + 1 :]).strip(" ,.!?")
+            return True, " ".join(original[index + 1 :]).strip(" ,.!?")
 
-    for i in range(len(norm) - 1):
-        if _is_wake_token(norm[i] + norm[i + 1]):
-            return True, " ".join(tokens[i + 2 :]).strip(" ,.!?")
+    for index in range(min(len(tokens), 3) - 1):
+        if _is_wake_token(tokens[index] + tokens[index + 1]):
+            return True, " ".join(original[index + 2 :]).strip(" ,.!?")
 
-    return False, text.strip()
+    return False, raw
+
+
+def _original_words(text: str) -> list[str]:
+    import re
+
+    return re.findall(r"\w+", text)
 
 
 # --- Адресаты ---
 
 
 class Group(StrEnum):
-    """Группы связи в заведении."""
+    """Отделы заведения — они же группы связи."""
 
     HALL = "зал"
     KITCHEN = "кухня"
@@ -58,84 +77,139 @@ class Group(StrEnum):
     EVERYONE = "все"
 
 
-# Основы слов, по которым узнаём адресата в любом падеже:
-# «кухне», «на кухню», «кухня» → KITCHEN.
-_GROUP_STEMS: tuple[tuple[str, Group], ...] = (
-    ("кухн", Group.KITCHEN),
+# Как отдел называют вслух. Сравнение идёт по основам, поэтому падежи покрыты:
+# «кухне», «на кухню», «кухня» сводятся к одной основе.
+_GROUP_WORDS: tuple[tuple[str, Group], ...] = (
+    ("кухня", Group.KITCHEN),
+    ("кухне", Group.KITCHEN),
     ("повар", Group.KITCHEN),
+    ("повара", Group.KITCHEN),
     ("бар", Group.BAR),
+    ("бармен", Group.BAR),
     ("зал", Group.HALL),
     ("официант", Group.HALL),
-    ("всем", Group.EVERYONE),
+    ("хостес", Group.HALL),
     ("все", Group.EVERYONE),
-    ("объявл", Group.EVERYONE),
+    ("всем", Group.EVERYONE),
 )
 
-# Глаголы обращения: «скажи», «передай», «спроси у», «соедини с».
-_SEND_STEMS = ("скаж", "передай", "сообщ", "спрос", "соедин", "свяж", "позов", "вызов")
+# Глаголы обращения. После них следующее слово-адресат — точно обращение.
+_ADDRESS_VERBS = (
+    "скажи", "скажите", "передай", "передайте", "сообщи", "сообщите",
+    "спроси", "спросите", "уточни", "уточните", "позови", "позовите",
+    "соедини", "соедините", "свяжи", "свяжите", "вызови", "вызовите",
+    "объяви", "объявите",
+)
+
+# Предлоги между глаголом и адресатом: «спроси У кухни», «передай НА кухню».
+_LINKING = frozenset({"у", "на", "в", "во", "к", "ко", "с", "со"})
+
+
+@dataclass(frozen=True)
+class Colleague:
+    """Сотрудник, к которому можно обратиться голосом.
+
+    nickname — короткая кличка на смене. Она важнее полного имени: распознавание
+    справляется с «Азиз» заметно лучше, чем с «Азизбек Рахматуллаев», а на кухне
+    к человеку и обращаются кличкой.
+    """
+
+    id: int
+    name: str
+    nickname: str | None = None
+
+    def spoken_forms(self) -> tuple[str, ...]:
+        forms = [self.nickname] if self.nickname else []
+        # Полное имя разбираем по словам: обращаются по первому, а не целиком.
+        forms.extend(words(self.name))
+        return tuple(form for form in (normalize(f) for f in forms if f) if len(form) > 2)
 
 
 class IntentKind(StrEnum):
     ASK = "ask"  # вопрос ассистенту по меню
-    SEND_GROUP = "send_group"  # реплика группе
+    SEND_GROUP = "send_group"  # реплика отделу
     SEND_PERSON = "send_person"  # реплика конкретному сотруднику
-    EMPTY = "empty"  # сказали только «Онви» и замолчали
-    IGNORED = "ignored"  # режим постоянного прослушивания, обращения не было
+    EMPTY = "empty"  # обращение без продолжения
+    IGNORED = "ignored"  # постоянное прослушивание, обращения не было
 
 
 @dataclass(frozen=True)
 class Intent:
     kind: IntentKind
-    # Текст без обращения и без адресата — то, что реально нужно передать или спросить.
     payload: str = ""
     group: Group | None = None
     person_id: int | None = None
     person_name: str | None = None
 
 
-def _normalize(text: str) -> str:
-    return text.lower().replace("ё", "е")
+@dataclass(frozen=True)
+class _Addressee:
+    """Найденный адресат и место, где он назван."""
+
+    position: int
+    group: Group | None = None
+    colleague: Colleague | None = None
 
 
-def _find_group(tokens: list[str]) -> tuple[Group, int] | None:
-    """Найти группу-адресата и позицию слова, которым она названа."""
-    for index, token in enumerate(tokens):
-        for stem, group in _GROUP_STEMS:
-            if token.startswith(stem):
-                return group, index
+def _match_at(token: str, colleagues: list[Colleague]) -> _Addressee | None:
+    """Кого называет это слово: отдел, коллегу или никого."""
+    for spoken, group in _GROUP_WORDS:
+        if sounds_like(token, spoken):
+            return _Addressee(position=-1, group=group)
+
+    for colleague in colleagues:
+        for form in colleague.spoken_forms():
+            if sounds_like(token, form):
+                return _Addressee(position=-1, colleague=colleague)
     return None
 
 
-def _find_person(
-    tokens: list[str], members: list[tuple[int, str]]
-) -> tuple[int, str, int] | None:
-    """Найти сотрудника по имени. Возвращает (id, имя, позицию в реплике)."""
-    for index, token in enumerate(tokens):
-        if len(token) <= 2:
+def _find_addressee(tokens: list[str], colleagues: list[Colleague]) -> _Addressee | None:
+    """Найти обращение: в начале фразы или сразу за глаголом обращения.
+
+    Порядок проверок важен. Звательное обращение в начале — самый сильный
+    признак, его и смотрим первым.
+    """
+    if not tokens:
+        return None
+
+    # 1. «Кухня, два лагмана» / «Азиз, подойди» — обращение первым словом.
+    first = _match_at(tokens[0], colleagues)
+    if first is not None:
+        return _Addressee(position=0, group=first.group, colleague=first.colleague)
+
+    # 2. «Скажи кухне…», «Спроси у Азиза…» — адресат сразу за глаголом,
+    #    возможно через предлог.
+    for index, token in enumerate(tokens[:-1]):
+        if not any(sounds_like(token, verb) for verb in _ADDRESS_VERBS):
             continue
-        for member_id, name in members:
-            for part in re.findall(r"\w+", _normalize(name)):
-                # Сравниваем по началу слова: «Азизу», «Азиза» → «Азиз».
-                if len(part) > 2 and (token.startswith(part) or part.startswith(token)):
-                    return member_id, name, index
+        candidate_index = index + 1
+        if tokens[candidate_index] in _LINKING and candidate_index + 1 < len(tokens):
+            candidate_index += 1
+        found = _match_at(tokens[candidate_index], colleagues)
+        if found is not None:
+            return _Addressee(
+                position=candidate_index, group=found.group, colleague=found.colleague
+            )
+
     return None
 
 
 def parse(
     text: str,
     *,
-    members: list[tuple[int, str]] | None = None,
+    colleagues: list[Colleague] | None = None,
     require_wake_word: bool = False,
 ) -> Intent:
-    """Разобрать распознанную реплику сотрудника.
+    """Разобрать распознанную фразу.
 
     Args:
         text: то, что вернуло распознавание.
-        members: коллеги, доступные для адресной связи — (id, имя).
-        require_wake_word: режим постоянного прослушивания. Без обращения «Онви»
-            реплика игнорируется, иначе ассистент лез бы в каждый разговор в зале.
+        colleagues: кто на смене — по ним ищется обращение по имени или кличке.
+        require_wake_word: режим постоянного прослушивания. Без «Онви» фраза
+            игнорируется, иначе ассистент лез бы в каждый разговор в зале.
     """
-    members = members or []
+    colleagues = colleagues or []
     had_wake, body = detect_wake_word(text)
 
     if require_wake_word and not had_wake:
@@ -145,28 +219,20 @@ def parse(
     if not body:
         return Intent(kind=IntentKind.EMPTY)
 
-    tokens = re.findall(r"\w+", _normalize(body))
-    original_tokens = re.findall(r"\w+", body)
-    is_send = any(token.startswith(stem) for token in tokens for stem in _SEND_STEMS)
+    tokens = words(body)
+    original = _original_words(body)
+    addressee = _find_addressee(tokens, colleagues)
 
-    person = _find_person(tokens, members)
-    if person is not None:
-        member_id, name, position = person
-        # Имя без глагола обращения — скорее вопрос про блюдо с похожим словом,
-        # чем адресная реплика. Требуем явного «скажи/передай/соедини».
-        if is_send:
-            payload = " ".join(original_tokens[position + 1 :]).strip(" ,.!?")
-            return Intent(
-                kind=IntentKind.SEND_PERSON,
-                payload=payload,
-                person_id=member_id,
-                person_name=name,
-            )
+    if addressee is None:
+        return Intent(kind=IntentKind.ASK, payload=body)
 
-    found = _find_group(tokens)
-    if found is not None and is_send:
-        group, position = found
-        payload = " ".join(original_tokens[position + 1 :]).strip(" ,.!?")
-        return Intent(kind=IntentKind.SEND_GROUP, payload=payload, group=group)
+    payload = " ".join(original[addressee.position + 1 :]).strip(" ,.!?")
 
-    return Intent(kind=IntentKind.ASK, payload=body)
+    if addressee.colleague is not None:
+        return Intent(
+            kind=IntentKind.SEND_PERSON,
+            payload=payload,
+            person_id=addressee.colleague.id,
+            person_name=addressee.colleague.nickname or addressee.colleague.name,
+        )
+    return Intent(kind=IntentKind.SEND_GROUP, payload=payload, group=addressee.group)

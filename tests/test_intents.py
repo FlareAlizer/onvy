@@ -1,22 +1,166 @@
-"""Разбор голосовых команд официанта.
+"""Кому адресована фраза: ассистенту или коллеге.
 
-Фразы взяты не из головы, а из того, как реально говорят в зале, и с поправкой
-на то, как STT коверкает имя ассистента.
+Главный вопрос всего продукта в зале. Ошибка в любую сторону дорогая: вопрос
+про блюдо, улетевший на кухню, — это шум в наушнике у поваров; реплика для
+кухни, ушедшая ассистенту, — это гость, который не дождался.
+
+Фразы здесь написаны так, как реально говорят на смене, включая то, во что их
+превращает распознавание в шуме.
 """
 
-from app.domain.intents import Group, IntentKind, detect_wake_word, parse
+from app.domain.intents import Colleague, Group, IntentKind, detect_wake_word, parse
 
-КОЛЛЕГИ = [(1, "Азиз"), (2, "Марина Петровна"), (3, "Улугбек")]
+СМЕНА = [
+    Colleague(id=1, name="Азизбек Рахматуллаев", nickname="Азиз"),
+    Colleague(id=2, name="Малика Юсупова", nickname="Малика"),
+    Colleague(id=3, name="Улугбек Каримов", nickname="Шеф"),
+]
+
+
+class TestВопросАссистенту:
+    def test_вопрос_про_состав(self):
+        intent = parse("Онви, что в составе лагмана", colleagues=СМЕНА)
+
+        assert intent.kind is IntentKind.ASK
+        assert intent.payload == "что в составе лагмана"
+
+    def test_кнопка_без_обращения_тоже_вопрос(self):
+        """Кнопка нажата осознанно — «Онви» произносить необязательно."""
+        intent = parse("сколько стоит плов", colleagues=СМЕНА)
+
+        assert intent.kind is IntentKind.ASK
+
+    def test_упоминание_отдела_в_середине_вопроса_не_обращение(self):
+        """«Что там в баре из напитков» — вопрос ассистенту, а не реплика бару."""
+        intent = parse("Онви, что там в баре из напитков", colleagues=СМЕНА)
+
+        assert intent.kind is IntentKind.ASK
+        assert intent.payload == "что там в баре из напитков"
+
+    def test_упоминание_имени_в_середине_вопроса_не_обращение(self):
+        intent = parse("Онви, сколько порций уже отдал Азиз", colleagues=СМЕНА)
+
+        assert intent.kind is IntentKind.ASK
+
+
+class TestОбращениеКОтделу:
+    def test_звательное_обращение_без_глагола(self):
+        """Так говорят чаще всего: назвал отдел и сказал что нужно."""
+        intent = parse("Онви, кухня, два лагмана без острого", colleagues=СМЕНА)
+
+        assert intent.kind is IntentKind.SEND_GROUP
+        assert intent.group is Group.KITCHEN
+        assert intent.payload == "два лагмана без острого"
+
+    def test_обращение_через_глагол(self):
+        intent = parse("Онви, скажи бару два чая", colleagues=СМЕНА)
+
+        assert intent.kind is IntentKind.SEND_GROUP
+        assert intent.group is Group.BAR
+        assert intent.payload == "два чая"
+
+    def test_обращение_через_предлог(self):
+        intent = parse("Онви, передай на кухню стол пять готов", colleagues=СМЕНА)
+
+        assert intent.kind is IntentKind.SEND_GROUP
+        assert intent.group is Group.KITCHEN
+        assert intent.payload == "стол пять готов"
+
+    def test_вопрос_коллегам_а_не_ассистенту(self):
+        """«Спроси у кухни» — вопрос уходит людям, ассистент тут ни при чём."""
+        intent = parse("Онви, спроси у кухни есть ли ещё баранина", colleagues=СМЕНА)
+
+        assert intent.kind is IntentKind.SEND_GROUP
+        assert intent.group is Group.KITCHEN
+        assert intent.payload == "есть ли ещё баранина"
+
+    def test_падежи_отдела(self):
+        for фраза in ("кухне два лагмана", "кухню два лагмана", "кухня два лагмана"):
+            intent = parse(фраза, colleagues=СМЕНА)
+            assert intent.group is Group.KITCHEN, фраза
+
+    def test_синоним_отдела(self):
+        intent = parse("Онви, повара, стол семь ждёт", colleagues=СМЕНА)
+
+        assert intent.group is Group.KITCHEN
+
+    def test_объявление_всем(self):
+        intent = parse("Онви, всем, гости на двенадцатый стол", colleagues=СМЕНА)
+
+        assert intent.kind is IntentKind.SEND_GROUP
+        assert intent.group is Group.EVERYONE
+
+
+class TestОбращениеПоКличке:
+    def test_кличка_в_начале(self):
+        intent = parse("Онви, Азиз, подойди на третий стол", colleagues=СМЕНА)
+
+        assert intent.kind is IntentKind.SEND_PERSON
+        assert intent.person_id == 1
+        assert intent.person_name == "Азиз"
+        assert intent.payload == "подойди на третий стол"
+
+    def test_кличка_в_падеже_после_глагола(self):
+        intent = parse("Онви, передай Азизу что стол готов", colleagues=СМЕНА)
+
+        assert intent.kind is IntentKind.SEND_PERSON
+        assert intent.person_id == 1
+
+    def test_кличка_не_совпадающая_с_именем(self):
+        """К Улугбеку на кухне обращаются «Шеф» — по ней и должно находить."""
+        intent = parse("Онви, шеф, что по времени на плов", colleagues=СМЕНА)
+
+        assert intent.kind is IntentKind.SEND_PERSON
+        assert intent.person_id == 3
+
+    def test_обращение_по_имени_если_кличку_не_назвали(self):
+        intent = parse("Онви, скажи Малике стол освободился", colleagues=СМЕНА)
+
+        assert intent.kind is IntentKind.SEND_PERSON
+        assert intent.person_id == 2
+
+    def test_ошибка_распознавания_в_имени_переживается(self):
+        """В шуме «Малика» легко приезжает как «Малина» — адресата терять нельзя."""
+        intent = parse("Онви, малина, подойди к бару", colleagues=СМЕНА)
+
+        assert intent.kind is IntentKind.SEND_PERSON
+        assert intent.person_id == 2
+
+    def test_длинное_имя_не_мешает(self):
+        """Полное имя в базе длинное, обращаются по первому слову."""
+        intent = parse("Онви, азизбек, забери заказ", colleagues=СМЕНА)
+
+        assert intent.kind is IntentKind.SEND_PERSON
+        assert intent.person_id == 1
+
+
+class TestГраницы:
+    def test_адресат_без_сообщения_переспрашивается(self):
+        intent = parse("Онви, скажи кухне", colleagues=СМЕНА)
+
+        assert intent.kind is IntentKind.SEND_GROUP
+        assert intent.payload == ""
+
+    def test_только_обращение(self):
+        intent = parse("Онви", colleagues=СМЕНА)
+
+        assert intent.kind is IntentKind.EMPTY
+
+    def test_пустая_смена_не_ломает_разбор(self):
+        intent = parse("Азиз, подойди", colleagues=[])
+
+        assert intent.kind is IntentKind.ASK
+
+    def test_режим_прослушивания_игнорирует_чужой_разговор(self):
+        intent = parse(
+            "да я вчера в кино ходил", colleagues=СМЕНА, require_wake_word=True
+        )
+
+        assert intent.kind is IntentKind.IGNORED
 
 
 class TestВейкВорд:
-    def test_чистое_обращение_отрезается(self):
-        had, rest = detect_wake_word("Онви, что в составе лагмана")
-        assert had is True
-        assert rest == "что в составе лагмана"
-
-    def test_искажения_распознавания_ловятся(self):
-        # Так SpeechKit пишет «Онви» в шумном зале.
+    def test_искажения_распознавания(self):
         for вариант in ("Анви", "Энви", "Онвий", "онвы"):
             had, rest = detect_wake_word(f"{вариант} где плов")
             assert had is True, вариант
@@ -24,80 +168,13 @@ class TestВейкВорд:
 
     def test_склейка_двух_слов(self):
         had, rest = detect_wake_word("он ви скажи кухне")
+
         assert had is True
         assert rest == "скажи кухне"
 
     def test_похожее_имя_не_считается_обращением(self):
-        """«Анвар» — это имя повара, а не вызов ассистента."""
+        """«Анвар» — имя повара, а не вызов ассистента."""
         had, rest = detect_wake_word("Анвар возьми заказ")
+
         assert had is False
         assert rest == "Анвар возьми заказ"
-
-    def test_пустая_реплика(self):
-        had, rest = detect_wake_word("   ")
-        assert had is False
-        assert rest == ""
-
-
-class TestРазборКоманды:
-    def test_вопрос_по_меню_идёт_ассистенту(self):
-        intent = parse("Онви, что в составе лагмана", members=КОЛЛЕГИ)
-        assert intent.kind is IntentKind.ASK
-        assert intent.payload == "что в составе лагмана"
-
-    def test_реплика_на_кухню_в_любом_падеже(self):
-        for фраза, ожидание in (
-            ("Онви, скажи кухне два лагмана без острого", "два лагмана без острого"),
-            ("Онви, передай на кухню стол пять готов", "стол пять готов"),
-        ):
-            intent = parse(фраза, members=КОЛЛЕГИ)
-            assert intent.kind is IntentKind.SEND_GROUP, фраза
-            assert intent.group is Group.KITCHEN, фраза
-            assert intent.payload == ожидание
-
-    def test_реплика_в_бар(self):
-        intent = parse("Онви, скажи бару два чая", members=КОЛЛЕГИ)
-        assert intent.kind is IntentKind.SEND_GROUP
-        assert intent.group is Group.BAR
-        assert intent.payload == "два чая"
-
-    def test_объявление_всем(self):
-        intent = parse("Онви, скажи всем гости на двенадцатый стол", members=КОЛЛЕГИ)
-        assert intent.kind is IntentKind.SEND_GROUP
-        assert intent.group is Group.EVERYONE
-        assert intent.payload == "гости на двенадцатый стол"
-
-    def test_адресная_реплика_коллеге(self):
-        intent = parse("Онви, передай Азизу что стол готов", members=КОЛЛЕГИ)
-        assert intent.kind is IntentKind.SEND_PERSON
-        assert intent.person_id == 1
-        assert intent.person_name == "Азиз"
-        assert intent.payload == "что стол готов"
-
-    def test_имя_коллеги_в_вопросе_не_делает_реплику(self):
-        """Без глагола обращения это вопрос ассистенту, а не отправка сообщения."""
-        intent = parse("Онви, сколько стоит плов", members=[(9, "Плов Мастер")])
-        assert intent.kind is IntentKind.ASK
-
-    def test_только_обращение_без_продолжения(self):
-        intent = parse("Онви", members=КОЛЛЕГИ)
-        assert intent.kind is IntentKind.EMPTY
-
-    def test_без_вейк_ворда_кнопка_всё_равно_работает(self):
-        """Кнопка нажата осознанно — обрабатываем, даже если ассистента не позвали."""
-        intent = parse("что в составе шурпы", members=КОЛЛЕГИ)
-        assert intent.kind is IntentKind.ASK
-        assert intent.payload == "что в составе шурпы"
-
-    def test_режим_прослушивания_игнорирует_чужие_разговоры(self):
-        intent = parse(
-            "да я вчера в кино ходил", members=КОЛЛЕГИ, require_wake_word=True
-        )
-        assert intent.kind is IntentKind.IGNORED
-
-    def test_режим_прослушивания_реагирует_на_обращение(self):
-        intent = parse(
-            "Онви, есть ли самса", members=КОЛЛЕГИ, require_wake_word=True
-        )
-        assert intent.kind is IntentKind.ASK
-        assert intent.payload == "есть ли самса"

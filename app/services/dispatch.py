@@ -14,7 +14,7 @@ from app.db.models.assistant_query import AssistantQuery, AssistantQueryMenuItem
 from app.db.models.comm_group import CommGroup, EmployeeCommGroup
 from app.db.models.employee import Employee
 from app.db.models.utterance import Utterance
-from app.domain.intents import Group
+from app.domain.intents import Colleague, Group
 from app.domain.language import Language, normalize
 from app.services.assistant_flow import AssistantOutcome
 from app.services.comms_flow import Broadcast, Recipient
@@ -25,11 +25,15 @@ logger = logging.getLogger(__name__)
 
 async def venue_colleagues(
     db: AsyncSession, venue_id: int, exclude_id: int
-) -> list[tuple[int, str]]:
-    """Коллеги по точке — для адресной связи по имени в голосовой команде."""
+) -> list[Colleague]:
+    """Кто на смене — по ним ищется обращение по кличке или имени.
+
+    Кличка идёт первой не для красоты: распознавание в шуме уверенно берёт
+    «Азиз» и разваливает «Азизбек Рахматуллаев».
+    """
     rows = (
         await db.execute(
-            select(Employee.id, Employee.name).where(
+            select(Employee.id, Employee.name, Employee.nickname).where(
                 Employee.venue_id == venue_id,
                 Employee.id != exclude_id,
                 Employee.is_active.is_(True),
@@ -37,7 +41,7 @@ async def venue_colleagues(
             )
         )
     ).all()
-    return [(row[0], row[1]) for row in rows]
+    return [Colleague(id=row[0], name=row[1], nickname=row[2]) for row in rows]
 
 
 async def resolve_group(

@@ -10,8 +10,8 @@
 помещаться в контекст.
 """
 
-import re
-
+from app.domain.text import sounds_like
+from app.domain.text import words as text_words
 from app.ports.menu import MenuItemData
 
 # Слова, которые есть в любом вопросе и ничего не говорят о блюде.
@@ -33,47 +33,14 @@ _WEIGHT_COMPOSITION = 1
 
 
 def tokenize(text: str) -> set[str]:
-    """Значимые слова запроса в нижнем регистре, без ё."""
-    words = re.findall(r"\w+", text.lower().replace("ё", "е"))
-    return {w for w in words if len(w) > 2 and w not in _STOPWORDS}
+    """Значимые слова запроса — без служебных и слишком коротких."""
+    return {w for w in text_words(text) if len(w) > 2 and w not in _STOPWORDS}
 
 
 def _words(text: str | None) -> set[str]:
-    if not text:
-        return set()
-    return {w for w in re.findall(r"\w+", text.lower().replace("ё", "е")) if len(w) > 2}
+    return {w for w in text_words(text) if len(w) > 2}
 
 
-# Окончания русских существительных и прилагательных, которые официант меняет
-# на лету: «шурпы», «лагмана», «бараниной», «пловом». Сравнение по префиксу здесь
-# не работает — «шурпы» и «шурпа» различаются как раз последней буквой.
-# Порядок важен: длинные окончания проверяются первыми.
-_ENDINGS = (
-    "ами", "ями", "ого", "ему", "ому", "ыми", "ими",
-    "ой", "ей", "ом", "ем", "ам", "ям", "ах", "ях", "ов", "ев", "ый", "ий", "ая",
-    "яя", "ое", "ее", "ые", "ие", "ью",
-    "а", "я", "ы", "и", "у", "ю", "е", "о", "й", "ь",
-)
-
-# Ниже этой длины стем не режем: «чай», «рис», «лук» должны остаться собой.
-_MIN_STEM = 4
-
-
-def stem(word: str) -> str:
-    """Грубая нормализация слова к основе.
-
-    Не морфология, а ровно то, что нужно поиску по меню: убрать падежное
-    окончание, если после него остаётся осмысленная основа.
-    """
-    for ending in _ENDINGS:
-        if word.endswith(ending) and len(word) - len(ending) >= _MIN_STEM:
-            return word[: -len(ending)]
-    return word
-
-
-def _matches(token: str, target: str) -> bool:
-    """Совпадение с поправкой на падежи: «шурпы» ↔ «шурпа», «плову» ↔ «плов»."""
-    return token == target or stem(token) == stem(target)
 
 
 def score(query_tokens: set[str], item: MenuItemData) -> int:
@@ -84,11 +51,11 @@ def score(query_tokens: set[str], item: MenuItemData) -> int:
 
     total = 0
     for token in query_tokens:
-        if any(_matches(token, w) for w in name_words):
+        if any(sounds_like(token, w) for w in name_words):
             total += _WEIGHT_NAME
-        elif any(_matches(token, w) for w in category_words):
+        elif any(sounds_like(token, w) for w in category_words):
             total += _WEIGHT_CATEGORY
-        elif any(_matches(token, w) for w in composition_words):
+        elif any(sounds_like(token, w) for w in composition_words):
             total += _WEIGHT_COMPOSITION
     return total
 
