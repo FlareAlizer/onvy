@@ -19,7 +19,14 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["ruff", "pytest", "pytest-asyncio", "respx", "aiosqlite"]
+dev = [
+    "ruff",
+    "pytest",
+    "pytest-asyncio",
+    "respx",
+    "aiosqlite",
+    "fakeredis>=2.37.0",
+]
 
 [tool.ruff]
 line-length = 100

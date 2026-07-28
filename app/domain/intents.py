@@ -10,7 +10,7 @@
 
 import re
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 # --- Вейк-ворд ---
 
@@ -49,7 +49,7 @@ def detect_wake_word(text: str) -> tuple[bool, str]:
 # --- Адресаты ---
 
 
-class Group(str, Enum):
+class Group(StrEnum):
     """Группы связи в заведении."""
 
     HALL = "зал"
@@ -75,7 +75,7 @@ _GROUP_STEMS: tuple[tuple[str, Group], ...] = (
 _SEND_STEMS = ("скаж", "передай", "сообщ", "спрос", "соедин", "свяж", "позов", "вызов")
 
 
-class IntentKind(str, Enum):
+class IntentKind(StrEnum):
     ASK = "ask"  # вопрос ассистенту по меню
     SEND_GROUP = "send_group"  # реплика группе
     SEND_PERSON = "send_person"  # реплика конкретному сотруднику

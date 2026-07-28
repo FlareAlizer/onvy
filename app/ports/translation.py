@@ -31,8 +31,6 @@ class Translation:
 
 
 class TranslationPort(Protocol):
-    async def translate(
-        self, text: str, source: Language, target: Language
-    ) -> Translation: ...
+    async def translate(self, text: str, source: Language, target: Language) -> Translation: ...
 
     def supports(self, source: Language, target: Language) -> bool: ...
