@@ -1,38 +1,55 @@
-from pydantic import BaseModel
+"""Схемы голосового API.
 
-from app.schemas.product import ProductOut
+Ответ намеренно самоописательный: клиент в зале должен понимать не только что
+сказать в ухо, но и что именно отвалилось, если отвалилось. Тихая деградация,
+неотличимая от нормального ответа, — худшее, что можно сделать с официантом,
+стоящим перед гостем.
+"""
 
-
-class VoiceAssistantResult(BaseModel):
-    """Результат голосового запроса к ассистенту.
-
-    query_text — что распознали; answer_text — что ответили; audio_base64 —
-    озвученный ответ (MP3, base64) для проигрывания в наушники.
-
-    intent маршрутизирует поведение клиента:
-    - "answer"  — ассистент ответил по каталогу (обычный режим);
-    - "connect" — просьба соединить по рации; клиент подставляет получателя;
-    - "ignored" — режим постоянного прослушивания: «Онви» не прозвучало,
-      фраза не обработана (без очков, лога и озвучки).
-    """
-
-    query_text: str
-    answer_text: str
-    found: bool
-    matched: list[ProductOut]
-    audio_base64: str = ""
-    # Активация и маршрутизация
-    wake_word: bool = False
-    intent: str = "answer"
-    connect_target_id: int | None = None
-    connect_target_name: str | None = None
-    connect_whole_department: bool = False
+from pydantic import BaseModel, Field
 
 
-class VoiceCommsResult(BaseModel):
-    """Результат отправки голосовой реплики по связи."""
+class StageMetricsOut(BaseModel):
+    """Сколько заняла каждая стадия. Основа отчёта по латентности пилота."""
 
-    message_id: int
-    recognized_text: str
-    source_language: str
-    delivered_to: list[int]  # кому реально доставили (был онлайн)
+    asr_ms: int = 0
+    search_ms: int = 0
+    answer_ms: int = 0
+    tts_ms: int = 0
+    total_ms: int = 0
+
+
+class VoiceResult(BaseModel):
+    """Результат нажатия кнопки."""
+
+    intent: str = Field(description="ask, send_group, send_person, empty или ignored")
+    query_text: str = Field(default="", description="Что распознали")
+    answer_text: str = Field(default="", description="Что сказать сотруднику в ухо")
+    audio_base64: str | None = Field(
+        default=None, description="Озвученный ответ; пусто, если синтез отказал"
+    )
+    mime_type: str = "audio/mpeg"
+    grounded_on: list[str] = Field(
+        default_factory=list, description="Позиции меню, на которых основан ответ"
+    )
+    degraded: str | None = Field(
+        default=None, description="Что отказало: asr, answer или tts"
+    )
+    # Заполняется, когда реплика ушла в рацию.
+    delivered_to: list[int] = Field(default_factory=list)
+    group: str | None = None
+    person_name: str | None = None
+    metrics: StageMetricsOut = Field(default_factory=StageMetricsOut)
+
+
+class TextMessageIn(BaseModel):
+    """Текстовая реплика — запасной путь, когда говорить нельзя или слишком шумно."""
+
+    text: str = Field(min_length=1, max_length=1000)
+    group: str | None = Field(default=None, description="зал, кухня, бар или все")
+    recipient_id: int | None = None
+
+
+class TextMessageResult(BaseModel):
+    delivered_to: list[int] = Field(default_factory=list)
+    translation_failed: bool = False

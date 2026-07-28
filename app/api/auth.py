@@ -1,0 +1,193 @@
+"""Вход по PIN, обновление токена, одноразовый тикет для WebSocket.
+
+- GET  /api/auth/venues/{venue_id}/employees — список сотрудников точки для
+  экрана входа (сотрудник выбирает себя по имени, затем вводит PIN).
+- POST /api/auth/login   — PIN → пара JWT (access + refresh).
+- POST /api/auth/refresh — ротация refresh-токена → новая пара.
+- POST /api/auth/ws-ticket — аутентифицированный клиент получает одноразовый
+  тикет для последующего подключения к WS без ключа в query-строке.
+
+Ничего из внутреннего состояния (существует ли сотрудник, почему именно отказ)
+наружу не течёт: и "сотрудника нет", и "PIN неверный" отвечают одной и той же
+фразой с одним и тем же кодом 401 — иначе форма логина превращается в оракул
+для перебора сотрудников (см. app/services/auth.py verify_pin).
+"""
+
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from redis.asyncio import Redis
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db import get_session
+from app.db.models.employee import Employee
+from app.deps import CurrentEmployee, get_redis, require_employee
+from app.schemas.auth import (
+    EmployeeLoginOption,
+    LoginRequest,
+    RefreshRequest,
+    TokenPair,
+    WsTicketOut,
+)
+from app.services import auth as auth_service
+from app.services.rate_limit import RateLimitRule, rate_limit_dependency
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/auth", tags=["auth"])
+
+# Вход подбором PIN — главная угроза короткого PIN-кода (spec §6). Лимит по IP
+# ловит распределённый перебор по разным employee_id с одного устройства/сети;
+# блокировку по конкретному сотруднику после N попыток даёт auth_service
+# (register_failed_pin_attempt/check_not_locked_out) отдельно.
+_LOGIN_RATE_LIMIT = RateLimitRule(limit=20, window_seconds=60)
+_login_rate_limited = rate_limit_dependency(_LOGIN_RATE_LIMIT, key_prefix="login")
+
+
+def _invalid_credentials() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Неверный сотрудник или PIN-код",
+    )
+
+
+@router.get("/venues/{venue_id}/employees", response_model=list[EmployeeLoginOption])
+async def list_login_options(
+    venue_id: int, db: AsyncSession = Depends(get_session)
+) -> list[Employee]:
+    """Публичный список активных сотрудников точки — для выбора себя на экране входа.
+
+    Отдаёт только id/имя/роль/язык. Никогда pin_hash, никогда неактивных/уволенных.
+    """
+    rows = (
+        await db.execute(
+            select(Employee).where(
+                Employee.venue_id == venue_id,
+                Employee.is_active.is_(True),
+                Employee.deleted_at.is_(None),
+            )
+        )
+    ).scalars().all()
+    return list(rows)
+
+
+@router.post("/login", response_model=TokenPair, dependencies=[Depends(_login_rate_limited)])
+async def login(
+    payload: LoginRequest,
+    db: AsyncSession = Depends(get_session),
+    redis: Redis = Depends(get_redis),
+) -> TokenPair:
+    """PIN-вход. Блокируется после settings.pin_max_attempts неудач подряд."""
+    try:
+        await auth_service.check_not_locked_out(redis, payload.employee_id)
+    except auth_service.AccountLockedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Слишком много неверных попыток, попробуйте позже",
+            headers={"Retry-After": str(exc.retry_after_seconds)},
+        ) from exc
+
+    employee = await db.get(Employee, payload.employee_id)
+    is_eligible = (
+        employee is not None and employee.deleted_at is None and employee.is_active
+    )
+    pin_ok = auth_service.verify_pin(payload.pin, employee.pin_hash if is_eligible else None)
+
+    if not is_eligible or not pin_ok:
+        await auth_service.register_failed_pin_attempt(redis, payload.employee_id)
+        raise _invalid_credentials()
+
+    await auth_service.clear_pin_attempts(redis, employee.id)
+    issued = await auth_service.issue_token_pair(
+        redis, employee_id=employee.id, venue_id=employee.venue_id, role=employee.role
+    )
+    logger.info("Вход сотрудника %s (точка %s)", employee.id, employee.venue_id)
+    return TokenPair(
+        access_token=issued.access_token,
+        refresh_token=issued.refresh_token,
+        expires_in=issued.expires_in,
+    )
+
+
+@router.post("/refresh", response_model=TokenPair)
+async def refresh(
+    payload: RefreshRequest,
+    db: AsyncSession = Depends(get_session),
+    redis: Redis = Depends(get_redis),
+) -> TokenPair:
+    """Ротация refresh-токена. Повторное предъявление уже использованного —
+    сигнал компрометации: гасим все сессии сотрудника и требуем новый вход."""
+    try:
+        token_payload = auth_service.decode_token(payload.refresh_token, expected_type="refresh")
+    except auth_service.TokenExpiredError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Токен просрочен"
+        ) from exc
+    except auth_service.TokenInvalidError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Недействительный токен"
+        ) from exc
+
+    try:
+        await auth_service.verify_epoch_current(redis, token_payload)
+    except auth_service.TokenRevokedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Токен отозван"
+        ) from exc
+
+    assert token_payload.jti is not None  # decode_token гарантирует jti для refresh
+    consumed = await auth_service.consume_refresh_jti(
+        redis, token_payload.employee_id, token_payload.jti
+    )
+    if not consumed:
+        # Токен уже был использован ранее (или подделан) — это либо гонка
+        # легитимного клиента с самим собой, либо украденный токен уже в деле.
+        # Безопаснее считать компрометацией и отозвать всё сотруднику разом.
+        await auth_service.bump_token_epoch(redis, token_payload.employee_id)
+        logger.warning(
+            "Повторное предъявление refresh-токена сотрудника %s — все сессии отозваны",
+            token_payload.employee_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Токен уже был использован, войдите заново",
+        )
+
+    employee = await db.get(Employee, token_payload.employee_id)
+    if employee is None or employee.deleted_at is not None or not employee.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Сотрудник неактивен"
+        )
+
+    issued = await auth_service.issue_token_pair(
+        redis, employee_id=employee.id, venue_id=employee.venue_id, role=employee.role
+    )
+    return TokenPair(
+        access_token=issued.access_token,
+        refresh_token=issued.refresh_token,
+        expires_in=issued.expires_in,
+    )
+
+
+@router.post("/ws-ticket", response_model=WsTicketOut)
+async def issue_ws_ticket(
+    current: CurrentEmployee = Depends(require_employee),
+    redis: Redis = Depends(get_redis),
+) -> WsTicketOut:
+    """Одноразовый короткоживущий тикет для подключения к WS без ключа в URL.
+
+    Точка интеграции для app/api/comms.py (переписывается в лупе связи):
+    клиент вызывает этот эндпоинт с обычным access-токеном (заголовок
+    Authorization), получает ticket, затем открывает
+    `GET /ws/comms/{employee_id}?ticket=...`. Обработчик WS вместо сравнения
+    query-параметра с settings.api_key должен вызвать
+    `app.services.auth.consume_ws_ticket(redis, ticket)` — None означает
+    неизвестный/просроченный/уже использованный тикет (закрыть сокет с
+    WS_1008_POLICY_VIOLATION), иначе сверить employee_id из тикета с
+    employee_id из пути/сообщения перед `manager.connect(...)`.
+    """
+    ticket = await auth_service.issue_ws_ticket(
+        redis, employee_id=current.id, venue_id=current.venue_id, role=current.role
+    )
+    return WsTicketOut(ticket=ticket, expires_in=auth_service.WS_TICKET_TTL_SECONDS)

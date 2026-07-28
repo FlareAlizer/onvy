@@ -1,98 +1,94 @@
+"""Точка входа приложения Onvy.
+
+Схема базы накатывается миграциями отдельным шагом деплоя, а не на старте:
+при нескольких воркерах старт превратился бы в гонку за одну и ту же схему.
+"""
+
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 
-from app.api import (
-    analytics,
-    assistant,
-    comms,
-    courses,
-    dashboard,
-    departments,
-    employees,
-    goals,
-    products,
-    voice,
-)
+from app.adapters.gigaam.speech import GigaAMSpeechRecognition
+from app.api import auth, comms, voice
 from app.config import settings
-from app.db import init_db
+from app.services import runtime
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.DEBUG if settings.debug else logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger(__name__)
 
-WEB_DIR = Path(__file__).parent / "web"
+FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Создать таблицы на старте (для MVP; в проде — Alembic)."""
-    await init_db()
-    if not settings.yandex_enabled:
-        logging.warning(
-            "YANDEX_API_KEY/YANDEX_FOLDER_ID не заданы — голосовые роуты вернут 503, "
-            "перевод работает в режиме заглушки."
-        )
-    yield
+    """Поднять шину связи на старте и аккуратно погасить на остановке."""
+    from app.deps import get_redis_client
+
+    redis = get_redis_client()
+    app.state.redis = redis
+    await runtime.get_bus(redis).start()
+    logger.info(
+        "Onvy поднят: ASR=%s, запасной=%s, языки GigaAM=%s",
+        settings.asr_provider,
+        settings.asr_fallback_provider or "нет",
+        settings.gigaam_languages,
+    )
+    try:
+        yield
+    finally:
+        await runtime.shutdown()
+        await redis.aclose()
 
 
 app = FastAPI(
-    title="Onvy MVP API",
-    description="Реалтайм-голосовой ассистент + связь для линейного персонала",
-    version="0.2.0",
+    title="Onvy API",
+    description="Голосовой ассистент, связь и перевод для линейного персонала",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
-_ROUTERS = (
-    employees,
-    departments,
-    products,
-    assistant,
-    comms,
-    voice,
-    goals,
-    dashboard,
-    analytics,
-    courses,
-)
-for module in _ROUTERS:
+for module in (auth, voice, comms):
     app.include_router(module.router, prefix="/api")
 
 
 @app.get("/health", tags=["system"])
-async def health() -> dict[str, str]:
-    """Проверка живости сервиса."""
-    return {"status": "ok", "yandex": "on" if settings.yandex_enabled else "off"}
+async def health() -> dict[str, object]:
+    """Живость сервиса и речевого стека.
+
+    Ноду распознавания проверяем отдельно: на пилоте должно быть видно, работает
+    ли ассистент, даже когда само приложение отвечает нормально.
+    """
+    node: bool | None = None
+    if settings.gigaam_url:
+        node = await GigaAMSpeechRecognition().healthy()
+    return {
+        "status": "ok",
+        "asr_provider": settings.asr_provider,
+        "asr_fallback": settings.asr_fallback_provider or None,
+        "gigaam_node": node,
+        "yandex": settings.yandex_enabled,
+    }
 
 
-# Веб-клиенты. Основной — React SPA (frontend/dist), если собран; иначе
-# фолбэк на старые vanilla-страницы. Старые /worker /rop /me остаются как legacy.
-app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
-
-FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
+# SPA официанта и управляющего. Прямые ссылки внутри приложения отдаём индексу,
+# чтобы работала навигация, а /api и /ws остаются за приложением.
 if FRONTEND_DIST.exists():
-    app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="spa-assets")
+    from fastapi.staticfiles import StaticFiles
 
+    app.mount(
+        "/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="spa-assets"
+    )
 
-@app.get("/", include_in_schema=False)
-async def index() -> FileResponse:
-    if FRONTEND_DIST.exists():
+    @app.get("/", include_in_schema=False)
+    async def index() -> FileResponse:
         return FileResponse(FRONTEND_DIST / "index.html")
-    return FileResponse(WEB_DIR / "index.html")
 
-
-@app.get("/worker", include_in_schema=False)
-async def worker_page() -> FileResponse:
-    return FileResponse(WEB_DIR / "worker.html")
-
-
-@app.get("/rop", include_in_schema=False)
-async def rop_page() -> FileResponse:
-    return FileResponse(WEB_DIR / "rop.html")
-
-
-@app.get("/me", include_in_schema=False)
-async def employee_page() -> FileResponse:
-    return FileResponse(WEB_DIR / "employee.html")
+    @app.get("/{path:path}", include_in_schema=False)
+    async def spa(path: str) -> FileResponse:
+        return FileResponse(FRONTEND_DIST / "index.html")

@@ -1,237 +1,153 @@
-"""Связь между сотрудниками (замена рации) — текстом и голосом, с переводом.
+"""Канал рации: постоянное соединение и текстовый запасной путь.
 
-- POST /comms/messages — текстовая реплика (one-to-one / broadcast).
-- POST /comms/voice    — голосовая реплика: ASR → перевод под язык получателя → TTS.
-- WS   /ws/comms/{id}  — канал доставки: сотрудник слушает входящие реплики.
-
-Реплика хранится на языке отправителя; получателю доставляется переведённой.
+Сокет только принимает — реплики отправляются голосовым роутом. Здесь же
+поддерживается отметка «на смене»: телефон, уснувший в кармане, перестаёт
+её обновлять и сам выпадает из онлайна.
 """
 
 import base64
 import logging
 
-from fastapi import (
-    APIRouter,
-    Depends,
-    Form,
-    HTTPException,
-    UploadFile,
-    WebSocket,
-    WebSocketDisconnect,
-    status,
-)
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
+from app import adapters
 from app.db import get_session
-from app.deps import require_api_key
-from app.models.employee import Employee
-from app.models.message import Message
-from app.schemas.message import DeliveredMessage, MessageIn, MessageOut
-from app.schemas.voice import VoiceCommsResult
-from app.services import gamification, speech
-from app.services.comms import manager
-from app.services.speech import SpeechError
-from app.services.translation import default_translator
+from app.db.models.employee import Employee
+from app.deps import CurrentEmployee, get_redis, require_employee
+from app.domain.intents import Group
+from app.domain.language import normalize
+from app.schemas.voice import TextMessageIn, TextMessageResult
+from app.services import auth as auth_service
+from app.services import dispatch
+from app.services.comms_flow import deliver
+from app.services.runtime import get_bus, get_presence, registry
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["comms"])
 
 
-async def _build_delivered(message: Message, recipient: Employee | None) -> DeliveredMessage:
-    """Собрать реплику под язык получателя (перевод, если языки различаются).
-
-    Перевод не должен ронять доставку: если движок перевода недоступен (нет ключа,
-    401/сеть), честно доставляем оригинал с translated=False, а не 500 всю рацию.
-    """
-    target_lang = recipient.language if recipient else message.source_language
-    try:
-        result = await default_translator.translate(
-            message.text, message.source_language, target_lang
-        )
-    except Exception as exc:  # noqa: BLE001 — перевод не критичен для доставки
-        logger.warning(
-            "Перевод недоступен (%s→%s): %s. Доставляю оригинал без перевода.",
-            message.source_language,
-            target_lang,
-            exc,
-        )
-        return DeliveredMessage(
-            id=message.id,
-            sender_id=message.sender_id,
-            recipient_id=message.recipient_id,
-            original_text=message.text,
-            source_language=message.source_language,
-            text=message.text,
-            target_language=message.source_language,
-            translated=False,
-            translation_provider="error",
-            created_at=message.created_at,
-        )
-    return DeliveredMessage(
-        id=message.id,
-        sender_id=message.sender_id,
-        recipient_id=message.recipient_id,
-        original_text=message.text,
-        source_language=message.source_language,
-        text=result.text,
-        target_language=result.target_language,
-        translated=result.translated,
-        translation_provider=result.provider,
-        created_at=message.created_at,
-    )
-
-
-async def _recipient_ids(db: AsyncSession, sender: Employee, recipient_id: int | None) -> list[int]:
-    """Кому доставлять: конкретному получателю или всем онлайн в отделе (broadcast)."""
-    if recipient_id is not None:
-        return [recipient_id] if manager.is_online(recipient_id) else []
-    # Broadcast — только онлайн-участники того же отдела, кроме отправителя.
-    online = set(manager.online_ids()) - {sender.id}
-    if not online:
-        return []
-    rows = (
-        (
-            await db.execute(
-                select(Employee.id).where(
-                    Employee.id.in_(online),
-                    Employee.department_id == sender.department_id,
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    return list(rows)
-
-
-async def _store_message(
-    db: AsyncSession, sender: Employee, payload_text: str, recipient_id: int | None
-) -> Message:
-    message = Message(
-        sender_id=sender.id,
-        recipient_id=recipient_id,
-        text=payload_text,
-        source_language=sender.language,
-    )
-    db.add(message)
-    await db.flush()
-    await db.refresh(message)
-    return message
-
-
-@router.post(
-    "/comms/messages",
-    response_model=MessageOut,
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_api_key)],
-)
-async def send_message(payload: MessageIn, db: AsyncSession = Depends(get_session)) -> MessageOut:
-    """Текстовая реплика (one-to-one или broadcast при recipient_id=None)."""
-    sender = await db.get(Employee, payload.sender_id)
-    if sender is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Отправитель не найден")
-
-    message = await _store_message(db, sender, payload.text, payload.recipient_id)
-    await gamification.award_points(db, sender.id, gamification.POINTS_MESSAGE)
-    await db.commit()
-
-    for employee_id in await _recipient_ids(db, sender, payload.recipient_id):
-        recipient = await db.get(Employee, employee_id)
-        delivered = await _build_delivered(message, recipient)
-        await manager.send_to(employee_id, {"type": "text", **delivered.model_dump(mode="json")})
-    return MessageOut.model_validate(message)
-
-
-@router.post(
-    "/comms/voice",
-    response_model=VoiceCommsResult,
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_api_key)],
-)
-async def send_voice(
-    audio: UploadFile,
-    sender_id: int = Form(...),
-    recipient_id: int | None = Form(default=None),
+@router.post("/comms/text", response_model=TextMessageResult)
+async def send_text(
+    payload: TextMessageIn,
+    current: CurrentEmployee = Depends(require_employee),
     db: AsyncSession = Depends(get_session),
-) -> VoiceCommsResult:
-    """Голосовая реплика: распознать → перевести под язык получателя → озвучить."""
-    if not settings.yandex_enabled:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Речевой стек Yandex не настроен (YANDEX_API_KEY/YANDEX_FOLDER_ID)",
+    redis: Redis = Depends(get_redis),
+) -> TextMessageResult:
+    """Отправить реплику текстом — когда говорить нельзя или в зале слишком шумно.
+
+    Получатель всё равно слышит её голосом: он в наушнике и в телефон не смотрит.
+    """
+    presence = get_presence(redis)
+    bus = get_bus(redis)
+    language = normalize(current.language)
+
+    group_id: int | None = None
+    recipient_employee_id: int | None = None
+
+    if payload.recipient_id is not None:
+        recipients = await dispatch.resolve_person(
+            db, presence, venue_id=current.venue_id, employee_id=payload.recipient_id
         )
-    sender = await db.get(Employee, sender_id)
-    if sender is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Отправитель не найден")
+        recipient_employee_id = payload.recipient_id
+    else:
+        try:
+            group = Group(payload.group or Group.EVERYONE.value)
+        except ValueError as exc:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Неизвестная группа: допустимы зал, кухня, бар, все",
+            ) from exc
+        recipients, group_id = await dispatch.resolve_group(
+            db, presence, venue_id=current.venue_id, group=group, exclude_id=current.id
+        )
 
-    audio_bytes = await audio.read()
-    try:
-        text = await speech.recognize(audio_bytes, sender.language)
-    except SpeechError as exc:
-        logger.error("STT ошибка (comms): %s", exc)
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail="Ошибка распознавания") from exc
+    broadcast = await deliver(
+        payload.text,
+        source_language=language,
+        recipients=recipients,
+        translation=adapters.translation(),
+        synthesis=adapters.synthesis(),
+    )
 
-    if not text.strip():
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Пустая реплика (тишина)")
-
-    message = await _store_message(db, sender, text, recipient_id)
-    await gamification.award_points(db, sender.id, gamification.POINTS_MESSAGE)
+    utterance = await dispatch.save_utterance(
+        db,
+        venue_id=current.venue_id,
+        sender_id=current.id,
+        source_language=language,
+        broadcast=broadcast,
+        recipient_employee_id=recipient_employee_id,
+        recipient_group_id=group_id,
+        asr_ms=0,
+    )
     await db.commit()
 
-    delivered_to: list[int] = []
-    for employee_id in await _recipient_ids(db, sender, recipient_id):
-        recipient = await db.get(Employee, employee_id)
-        delivered = await _build_delivered(message, recipient)
-        try:
-            audio_out = await speech.synthesize(delivered.text, delivered.target_language)
-        except SpeechError as exc:
-            logger.error("TTS ошибка (comms) для %s: %s", employee_id, exc)
-            continue
-        payload = {
-            "type": "voice",
-            **delivered.model_dump(mode="json"),
-            "audio_base64": base64.b64encode(audio_out).decode("ascii"),
-        }
-        if await manager.send_to(employee_id, payload):
-            delivered_to.append(employee_id)
+    sender = await db.get(Employee, current.id)
+    for delivery in broadcast.deliveries:
+        await bus.publish(
+            delivery.employee_id,
+            {
+                "type": "text",
+                "utterance_id": utterance.id,
+                "from_id": current.id,
+                "from_name": sender.name if sender else "",
+                "text": delivery.text,
+                "language": delivery.language,
+                "translated": delivery.translated,
+                "translation_failed": delivery.translation_failed,
+                "audio_base64": base64.b64encode(delivery.audio).decode("ascii")
+                if delivery.audio
+                else None,
+                "mime_type": delivery.mime_type,
+            },
+        )
 
-    return VoiceCommsResult(
-        message_id=message.id,
-        recognized_text=text,
-        source_language=sender.language,
-        delivered_to=delivered_to,
+    return TextMessageResult(
+        delivered_to=broadcast.delivered_to,
+        translation_failed=any(d.translation_failed for d in broadcast.deliveries),
     )
 
 
-@router.get(
-    "/comms/messages",
-    response_model=list[MessageOut],
-    dependencies=[Depends(require_api_key)],
-)
-async def list_messages(db: AsyncSession = Depends(get_session)) -> list[Message]:
-    """История реплик (для аналитики РОПа)."""
-    return list((await db.execute(select(Message))).scalars().all())
+@router.websocket("/ws/comms")
+async def comms_socket(websocket: WebSocket) -> None:
+    """Канал доставки реплик.
 
-
-@router.websocket("/ws/comms/{employee_id}")
-async def comms_ws(websocket: WebSocket, employee_id: int) -> None:
-    """Канал доставки: держит сотрудника онлайн и шлёт ему входящие реплики.
-
-    Отправка реплик идёт через POST /comms/voice и /comms/messages. Здесь только
-    приём. Аутентификация — по query-параметру ?api_key=... (в браузерном WS
-    заголовки недоступны).
+    Авторизация — одноразовым тикетом в query-параметре: заголовки браузерному
+    WebSocket недоступны, а токен в URL светился бы в логах прокси. Тикет живёт
+    меньше минуты и гасится при первом использовании.
     """
-    if websocket.query_params.get("api_key") != settings.api_key:
+    ticket = websocket.query_params.get("ticket")
+    if not ticket:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
-    await manager.connect(employee_id, websocket)
+    redis = websocket.app.state.redis
+    data = await auth_service.consume_ws_ticket(redis, ticket)
+    if data is None:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    presence = get_presence(redis)
+    bus = get_bus(redis)
+
+    await websocket.accept()
+    registry.add(data.employee_id, websocket)
+    await bus.attach(data.employee_id)
+    await presence.touch(data.venue_id, data.employee_id)
+    logger.info("Сотрудник %s на связи", data.employee_id)
+
     try:
         while True:
-            # Держим соединение открытым; входящие пинги от клиента игнорируем.
+            # Клиент шлёт пинг чаще, чем истекает отметка присутствия.
+            # Содержимое неважно: сам факт сообщения означает, что он жив.
             await websocket.receive_text()
+            await presence.touch(data.venue_id, data.employee_id)
     except WebSocketDisconnect:
-        manager.disconnect(employee_id)
+        pass
+    finally:
+        registry.remove(data.employee_id)
+        await bus.detach(data.employee_id)
+        await presence.leave(data.venue_id, data.employee_id)
+        logger.info("Сотрудник %s ушёл со связи", data.employee_id)

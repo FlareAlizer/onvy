@@ -1,172 +1,184 @@
-"""Голосовой ассистент: аудио запроса → распознавание → подсказка → озвучка.
+"""Голосовой роут: одно нажатие кнопки — один запрос.
 
-Аудио приходит из браузера как сырой LPCM (16 kHz, mono, 16-bit LE) — см.
-web/js/recorder.js. Ответ возвращаем текстом + MP3 (base64) для проигрывания.
+Сюда приходит сырой LPCM с телефона официанта. Дальше всё решает распознанная
+фраза: вопрос про блюдо уходит ассистенту, «скажи кухне…» — коллегам на смене.
+Клиент не выбирает режим заранее, потому что в зале некогда переключать вкладки.
 """
 
 import base64
 import logging
 
-from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Form, UploadFile
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
+from app import adapters
 from app.db import get_session
-from app.deps import require_api_key
-from app.models.assistant_log import AssistantLog
-from app.models.employee import Employee
-from app.schemas.voice import VoiceAssistantResult
-from app.services import assistant as assistant_service
-from app.services import gamification, llm, speech
-from app.services.llm import LLMError
-from app.services.speech import SpeechError
+from app.db.models.employee import Employee
+from app.deps import CurrentEmployee, get_redis, require_employee
+from app.domain.intents import IntentKind
+from app.domain.language import normalize
+from app.schemas.voice import StageMetricsOut, VoiceResult
+from app.services import dispatch
+from app.services.assistant_flow import AssistantOutcome, handle_voice_query
+from app.services.comms_flow import deliver
+from app.services.menu import active_stop_list, load_menu
+from app.services.runtime import get_bus, get_presence
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["voice"], dependencies=[Depends(require_api_key)])
+router = APIRouter(tags=["voice"])
 
 
-def _require_yandex() -> None:
-    if not settings.yandex_enabled:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Речевой стек Yandex не настроен: заполни YANDEX_API_KEY и YANDEX_FOLDER_ID",
-        )
-
-
-async def _department_members(db: AsyncSession, employee: Employee | None) -> list[tuple[int, str]]:
-    """Коллеги по отделу (кроме самого сотрудника) — для маршрутизации в рацию."""
-    if employee is None or employee.department_id is None:
-        return []
-    rows = (
-        await db.execute(
-            select(Employee.id, Employee.name).where(
-                Employee.department_id == employee.department_id,
-                Employee.id != employee.id,
-            )
-        )
-    ).all()
-    return [(r[0], r[1]) for r in rows]
-
-
-@router.post("/voice/assistant", response_model=VoiceAssistantResult)
-async def voice_assistant(
+@router.post("/voice/push-to-talk", response_model=VoiceResult)
+async def push_to_talk(
     audio: UploadFile,
-    employee_id: int | None = Form(default=None),
-    require_wake: bool = Form(default=False),
+    always_on: bool = Form(
+        default=False,
+        description="Режим постоянного прослушивания: без обращения «Онви» фраза игнорируется",
+    ),
+    current: CurrentEmployee = Depends(require_employee),
     db: AsyncSession = Depends(get_session),
-) -> VoiceAssistantResult:
-    """Голосовой запрос сотрудника: активация «Онви» → маршрут в каталог или рацию.
-
-    - «Онви, где лежит X / что в составе Y» → подсказка по каталогу голосом.
-    - «Онви, соедини меня с Иваном / со всем отделом» → intent=connect, клиент
-      подставляет получателя в рацию.
-    - require_wake=true — режим постоянного прослушивания: фразы БЕЗ «Онви»
-      игнорируются (intent=ignored), чтобы ассистент не реагировал на всё подряд.
-    """
-    _require_yandex()
-
-    employee = await db.get(Employee, employee_id) if employee_id is not None else None
-    language = employee.language if employee is not None else "ru"
-
+    redis: Redis = Depends(get_redis),
+) -> VoiceResult:
+    """Обработать запись с кнопки: ответить по меню или передать реплику коллегам."""
     audio_bytes = await audio.read()
-    try:
-        query_text = await speech.recognize(audio_bytes, language)
-    except SpeechError as exc:
-        logger.error("STT ошибка: %s", exc)
-        raise HTTPException(
-            status.HTTP_502_BAD_GATEWAY, detail="Ошибка распознавания речи"
-        ) from exc
+    language = normalize(current.language)
 
-    wake_word, cleaned = assistant_service.detect_wake_word(query_text)
+    menu = await load_menu(db, current.venue_id)
+    stopped = await active_stop_list(db, current.venue_id)
+    colleagues = await dispatch.venue_colleagues(db, current.venue_id, current.id)
 
-    # Фолбэк: у сотрудника язык профиля не ru, но говорит он по-русски — «Онви»
-    # английской моделью STT не распознаётся. Пробуем русскую модель.
-    if require_wake and not wake_word and language != "ru":
-        try:
-            alt_text = await speech.recognize(audio_bytes, "ru")
-        except SpeechError:
-            alt_text = ""
-        alt_wake, alt_cleaned = assistant_service.detect_wake_word(alt_text)
-        if alt_wake:
-            query_text, wake_word, cleaned = alt_text, True, alt_cleaned
-            language = "ru"  # отвечаем на языке, на котором говорят
-
-    # Постоянное прослушивание: без «Онви» фразу молча пропускаем.
-    if require_wake and not wake_word:
-        return VoiceAssistantResult(
-            query_text=query_text,
-            answer_text="",
-            found=False,
-            matched=[],
-            intent="ignored",
-        )
-
-    # Если обращения «Онви» нет — всё равно обрабатываем (кнопка нажата осознанно).
-    routing_text = cleaned if wake_word else query_text.strip()
-
-    intent = "answer"
-    matched: list = []
-    found = False
-    connect_id: int | None = None
-    connect_name: str | None = None
-    whole_dept = False
-
-    if not routing_text:
-        answer_text = "Слушаю. Что подсказать по товару или с кем соединить?"
-    elif assistant_service.is_connect_request(routing_text):
-        members = await _department_members(db, employee)
-        connect_id, connect_name, whole_dept = assistant_service.resolve_connect_target(
-            routing_text, members
-        )
-        if connect_id is not None:
-            intent, answer_text = "connect", f"Соединяю с {connect_name}. Говорите."
-        elif whole_dept:
-            intent, answer_text = "connect", "Включаю связь со всем отделом. Говорите."
-        else:
-            answer_text = "Не понял, с кем соединить. Назовите имя коллеги или «весь отдел»."
-    else:
-        # LLM отвечает на свободный вопрос по данным каталога магазина.
-        matched = await assistant_service.retrieve_context(db, routing_text)
-        found = bool(matched)
-        try:
-            answer_text = await llm.answer_over_catalog(routing_text, matched, language)
-        except LLMError as exc:
-            logger.error("LLM ошибка: %s", exc)
-            raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail="Ошибка ассистента") from exc
-
-    try:
-        audio_answer = await speech.synthesize(answer_text, language)
-    except SpeechError as exc:
-        logger.error("TTS ошибка: %s", exc)
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail="Ошибка синтеза речи") from exc
-
-    # Журнал + геймификация (соединение по рации — вовлечение, но не «ответ найден»).
-    db.add(
-        AssistantLog(
-            employee_id=employee_id,
-            query_text=query_text,
-            answer_text=answer_text,
-            found=found,
-        )
+    outcome = await handle_voice_query(
+        audio_bytes,
+        language=language,
+        menu=menu,
+        stopped=stopped,
+        members=colleagues,
+        recognition=adapters.recognition(),
+        answering=adapters.answering(),
+        synthesis=adapters.synthesis(),
+        require_wake_word=always_on,
     )
-    await gamification.award_points(
+
+    if outcome.kind in (IntentKind.SEND_GROUP, IntentKind.SEND_PERSON):
+        return await _forward_to_colleagues(outcome, current, db, redis, language)
+
+    if outcome.kind is not IntentKind.IGNORED:
+        await dispatch.save_assistant_query(
+            db, venue_id=current.venue_id, employee_id=current.id, outcome=outcome
+        )
+        await db.commit()
+
+    return _to_response(outcome)
+
+
+async def _forward_to_colleagues(
+    outcome: AssistantOutcome,
+    current: CurrentEmployee,
+    db: AsyncSession,
+    redis: Redis,
+    language,
+) -> VoiceResult:
+    """Передать реплику группе или конкретному коллеге, каждому на его языке."""
+    presence = get_presence(redis)
+    bus = get_bus(redis)
+
+    if outcome.kind is IntentKind.SEND_GROUP and outcome.group is not None:
+        recipients, group_id = await dispatch.resolve_group(
+            db,
+            presence,
+            venue_id=current.venue_id,
+            group=outcome.group,
+            exclude_id=current.id,
+        )
+        recipient_employee_id = None
+    else:
+        recipients = await dispatch.resolve_person(
+            db, presence, venue_id=current.venue_id, employee_id=outcome.person_id or 0
+        )
+        group_id = None
+        recipient_employee_id = outcome.person_id
+
+    broadcast = await deliver(
+        outcome.payload,
+        source_language=language,
+        recipients=recipients,
+        translation=adapters.translation(),
+        synthesis=adapters.synthesis(),
+    )
+
+    utterance = await dispatch.save_utterance(
         db,
-        employee_id,
-        gamification.POINTS_ASSISTANT_FOUND if found else gamification.POINTS_ASSISTANT_MISS,
+        venue_id=current.venue_id,
+        sender_id=current.id,
+        source_language=language,
+        broadcast=broadcast,
+        recipient_employee_id=recipient_employee_id,
+        recipient_group_id=group_id,
+        asr_ms=outcome.metrics.asr_ms,
     )
     await db.commit()
 
-    return VoiceAssistantResult(
-        query_text=query_text,
-        answer_text=answer_text,
-        found=found,
-        matched=matched,
-        audio_base64=base64.b64encode(audio_answer).decode("ascii"),
-        wake_word=wake_word,
-        intent=intent,
-        connect_target_id=connect_id,
-        connect_target_name=connect_name,
-        connect_whole_department=whole_dept,
+    sender_name = (await db.get(Employee, current.id)).name
+    for delivery in broadcast.deliveries:
+        await bus.publish(
+            delivery.employee_id,
+            {
+                "type": "voice",
+                "utterance_id": utterance.id,
+                "from_id": current.id,
+                "from_name": sender_name,
+                "text": delivery.text,
+                "language": delivery.language,
+                "translated": delivery.translated,
+                "translation_failed": delivery.translation_failed,
+                "audio_base64": base64.b64encode(delivery.audio).decode("ascii")
+                if delivery.audio
+                else None,
+                "mime_type": delivery.mime_type,
+            },
+        )
+
+    # Отправителю подтверждаем словами: он должен знать, что его услышали,
+    # не глядя в телефон.
+    if broadcast.deliveries:
+        confirmation = f"Передал, слышат {len(broadcast.deliveries)}."
+    else:
+        confirmation = "Никого нет на связи — не передал."
+
+    return VoiceResult(
+        intent=outcome.kind.value,
+        query_text=outcome.query_text,
+        answer_text=confirmation,
+        grounded_on=[],
+        degraded=outcome.degraded,
+        delivered_to=broadcast.delivered_to,
+        group=outcome.group.value if outcome.group else None,
+        person_name=outcome.person_name,
+        metrics=StageMetricsOut(
+            asr_ms=outcome.metrics.asr_ms,
+            total_ms=outcome.metrics.asr_ms + broadcast.total_ms,
+        ),
+    )
+
+
+def _to_response(outcome: AssistantOutcome) -> VoiceResult:
+    return VoiceResult(
+        intent=outcome.kind.value,
+        query_text=outcome.query_text,
+        answer_text=outcome.answer_text,
+        audio_base64=base64.b64encode(outcome.audio).decode("ascii")
+        if outcome.audio
+        else None,
+        mime_type=outcome.mime_type,
+        grounded_on=list(outcome.grounded_on),
+        degraded=outcome.degraded,
+        metrics=StageMetricsOut(
+            asr_ms=outcome.metrics.asr_ms,
+            search_ms=outcome.metrics.search_ms,
+            answer_ms=outcome.metrics.answer_ms,
+            tts_ms=outcome.metrics.tts_ms,
+            total_ms=outcome.metrics.total_ms,
+        ),
     )
