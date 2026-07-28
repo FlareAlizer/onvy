@@ -1,21 +1,25 @@
 [project]
-name = "project"
-version = "0.1.0"
-description = "Проект: бот / MVP / исследования"
+name = "onvy"
+version = "0.3.0"
+description = "Onvy — голосовой ассистент, связь и перевод для линейного персонала"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi",
     "uvicorn[standard]",
     "pydantic-settings",
     "sqlalchemy",
-    "aiosqlite",
+    "asyncpg",
+    "alembic",
+    "redis",
     "httpx",
     "python-multipart",
+    "pyjwt",
+    "argon2-cffi",
     "segno",
 ]
 
 [dependency-groups]
-dev = ["ruff", "pytest", "pytest-asyncio", "respx"]
+dev = ["ruff", "pytest", "pytest-asyncio", "respx", "aiosqlite"]
 
 [tool.ruff]
 line-length = 100
