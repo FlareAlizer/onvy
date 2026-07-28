@@ -1,0 +1,36 @@
+# Секреты
+.env
+*.pem
+id_rsa*
+secrets*
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# БД / данные
+*.db
+*.sqlite3
+
+# Claude Code — личные оверрайды не коммитим, а комплект (.claude/*) коммитим
+.claude/settings.local.json
+
+# ОС/редакторы
+.DS_Store
+.idea/
+.vscode/
+
+# Ruflo runtime
+.claude-flow/
+.hive-mind/
+memory/

@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Onvy — сотрудник</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <div class="brand"><span class="logo">🎧</span><span>Onvy<span class="tag" id="who"></span></span></div>
+      <nav><a href="/me">кабинет</a><a href="#" id="exit">выйти</a></nav>
+    </header>
+
+    <div class="pillnav">
+      <a href="#comms">📻 Связь</a>
+      <a href="#assist">💡 Ассистент</a>
+      <a href="#dialog">🎙️ Запись диалога</a>
+      <a href="#lang">🌍 Язык</a>
+    </div>
+
+    <h2 class="sec" id="comms">Связь — рация с переводом</h2>
+    <div class="card">
+      <div class="spread"><span class="status" id="wsStatus" style="margin:0">Подключаюсь…</span></div>
+      <label>Кому говорить</label>
+      <select id="recipient"><option value="">📢 Всему отделу</option></select>
+      <button class="talk" id="commsBtn">Держи<br />и говори</button>
+      <p class="status" id="commsStatus" style="text-align:center"></p>
+    </div>
+    <div class="card flat log" id="incoming"><span class="muted small">Входящие реплики появятся здесь и озвучатся сами</span></div>
+
+    <h2 class="sec" id="assist">Ассистент по товарам</h2>
+    <div class="card">
+      <button class="talk green" id="askBtn">Держи<br />и спроси</button>
+      <p class="status" id="askStatus" style="text-align:center">Спроси про цену, наличие или где лежит товар</p>
+      <div id="askResult"></div>
+    </div>
+
+    <h2 class="sec" id="dialog">Запись диалога с покупателем</h2>
+    <div class="card">
+      <p class="muted small" style="margin-top:0">Включи запись на время работы с покупателем — AI сам найдёт диалоги,
+        разберёт сильные и слабые стороны и подскажет, как говорить лучше. Разборы — в <a href="/me">кабинете</a>.</p>
+      <button id="recBtn">● Начать запись</button>
+      <p class="status" id="recStatus"></p>
+      <div id="recResult"></div>
+    </div>
+
+    <h2 class="sec" id="lang">Мой язык</h2>
+    <div class="card">
+      <label style="margin-top:0">На этом языке я слышу коллег и ассистента</label>
+      <select id="lang">
+        <option value="ru">Русский</option>
+        <option value="en">English</option>
+        <option value="uz">O‘zbek</option>
+        <option value="kk">Қазақ</option>
+        <option value="tr">Türkçe</option>
+      </select>
+      <p class="status" id="langStatus"></p>
+    </div>
+  </div>
+
+  <script src="/static/js/recorder.js"></script>
+  <script src="/static/js/app.js"></script>
+  <script src="/static/js/features.js"></script>
+  <script>
+    const s = Onvy.requireSession();
+    document.getElementById("who").textContent = `${s.name} · отдел ${s.departmentId ?? "—"}`;
+    document.getElementById("lang").value = s.language || "ru";
+    document.getElementById("exit").onclick = () => { Onvy.clear(); location.href = "/"; };
+
+    // Смена языка
+    document.getElementById("lang").onchange = async (e) => {
+      const st = document.getElementById("langStatus");
+      try {
+        const emp = await Onvy.api(`/employees/${s.employeeId}`, {
+          method: "PATCH", body: JSON.stringify({ language: e.target.value }),
+        });
+        Onvy.save({ ...s, language: emp.language });
+        st.textContent = "Язык сохранён: " + emp.language;
+      } catch (err) { st.textContent = "Ошибка: " + err.message; }
+    };
+
+    // Коллеги отдела с онлайн-статусом
+    async function loadRecipients() {
+      if (!s.departmentId) return;
+      const members = await Onvy.api(`/departments/${s.departmentId}/members`);
+      const sel = document.getElementById("recipient");
+      const cur = sel.value;
+      sel.innerHTML = '<option value="">📢 Всему отделу</option>';
+      members.filter((m) => m.id !== s.employeeId).forEach((m) => {
+        const o = document.createElement("option");
+        o.value = m.id;
+        o.textContent = `${m.name} (${m.language})${m.online ? " — онлайн" : " — офлайн"}`;
+        sel.appendChild(o);
+      });
+      sel.value = cur;
+    }
+    loadRecipients().catch(() => {});
+    setInterval(() => loadRecipients().catch(() => {}), 5000);
+
+    // Входящие
+    const incoming = document.getElementById("incoming");
+    Onvy.connectComms(
+      () => { document.getElementById("wsStatus").innerHTML = '<span class="pill on">✓ На связи</span>'; },
+      (m) => {
+        if (incoming.querySelector(".muted")) incoming.innerHTML = "";
+        const tr = m.translated ? ' <span class="pill">переведено</span>' : "";
+        const div = document.createElement("div");
+        div.className = "log-item";
+        div.innerHTML = `<b>#${m.sender_id}:</b> ${OnvyUI.esc(m.text)}${tr}<br/><span class="muted small">ориг. (${m.source_language}): ${OnvyUI.esc(m.original_text)}</span>`;
+        incoming.prepend(div);
+        if (m.type === "voice" && m.audio_base64) Onvy.playBase64Mp3(m.audio_base64);
+      },
+      () => { document.getElementById("wsStatus").innerHTML = '<span class="pill bad">Связь потеряна</span>'; }
+    );
+
+    // Ответить по рации
+    Onvy.bindTalk(document.getElementById("commsBtn"), async (blob) => {
+      const st = document.getElementById("commsStatus");
+      st.textContent = "Отправляю…";
+      try {
+        const r = await Onvy.postAudio("/comms/voice", blob, {
+          sender_id: s.employeeId, recipient_id: document.getElementById("recipient").value || null,
+        });
+        st.textContent = `Отправлено: «${r.recognized_text}»`;
+      } catch (e) { st.textContent = "Ошибка: " + e.message; }
+    });
+
+    // Ассистент
+    Onvy.bindTalk(document.getElementById("askBtn"), async (blob) => {
+      const st = document.getElementById("askStatus");
+      st.textContent = "Думаю…";
+      try {
+        const r = await Onvy.postAudio("/voice/assistant", blob, { employee_id: s.employeeId });
+        document.getElementById("askResult").innerHTML =
+          `<div class="log-item"><b>Вы:</b> ${OnvyUI.esc(r.query_text || "—")}<br/><b>Ассистент:</b> ${OnvyUI.esc(r.answer_text)}</div>`;
+        st.textContent = "";
+        if (r.audio_base64) Onvy.playBase64Mp3(r.audio_base64);
+      } catch (e) { st.textContent = "Ошибка: " + e.message; }
+    });
+
+    // Запись диалога → постфактум-аналитика
+    let recording = false;
+    const recBtn = document.getElementById("recBtn");
+    const recStatus = document.getElementById("recStatus");
+    recBtn.onclick = async () => {
+      if (!recording) {
+        try {
+          await OnvyRecorder.start();
+          recording = true;
+          recBtn.textContent = "■ Остановить и отправить на разбор";
+          recBtn.style.background = "linear-gradient(135deg,#ef4444,#f87171)";
+          recStatus.innerHTML = '<span class="recbar"><span class="recdot"></span> Идёт запись — говори с покупателем как обычно</span>';
+        } catch (e) { recStatus.textContent = "Нет доступа к микрофону: " + e.message; }
+        return;
+      }
+      recording = false;
+      recBtn.disabled = true;
+      recBtn.textContent = "● Начать запись";
+      recBtn.style.background = "";
+      recStatus.textContent = "Транскрибирую и разбираю диалоги… (до минуты)";
+      try {
+        const blob = await OnvyRecorder.stop();
+        const r = await Onvy.postAudio("/analytics/upload", blob, { employee_id: s.employeeId });
+        recStatus.textContent = "";
+        document.getElementById("recResult").innerHTML =
+          `<div class="log-item">✅ Найдено диалогов: <b>${r.dialogues_found}</b>. Разборы уже в <a href="/me">кабинете</a>.</div>` +
+          r.analyses.map((a) => OnvyUI.analysisListItem({ ...a, summary: (a.analysis || {}).summary })).join("");
+      } catch (e) { recStatus.textContent = "Ошибка: " + e.message; }
+      recBtn.disabled = false;
+    };
+  </script>
+</body>
+</html>

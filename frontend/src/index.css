@@ -1,0 +1,45 @@
+@import "tailwindcss";
+
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@theme {
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --color-brand-bg: #fafafa;
+  --color-brand-card: #ffffff;
+  --color-brand-accent: #18181b;
+  --color-brand-violet: #6366f1;
+  --color-brand-success: #10b981;
+  --color-brand-error: #f43f5e;
+  --color-brand-border: #e4e4e7;
+}
+
+@layer base {
+  body {
+    @apply bg-brand-bg text-slate-800 font-sans antialiased;
+    height: 100vh;
+    width: 100vw;
+    overflow: hidden;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply px-5 py-2.5 bg-brand-accent text-white rounded-xl font-medium hover:bg-slate-800 transition-all active:scale-[0.98] disabled:opacity-50 text-sm cursor-pointer shadow-sm;
+  }
+
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { @apply bg-slate-200 hover:bg-slate-300 rounded-full transition-all; }
+}
+
+@keyframes pulse-ring {
+  0% { transform: scale(0.9); opacity: 0.6; }
+  100% { transform: scale(1.4); opacity: 0; }
+}
+.animate-pulse-ring { animation: pulse-ring 2.5s cubic-bezier(0.25, 0, 0, 1) infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse-ring, .animate-pulse, .animate-spin { animation: none; }
+}

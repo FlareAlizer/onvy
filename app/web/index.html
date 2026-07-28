@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Onvy — вход</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <div class="brand" style="justify-content:center"><span class="logo">🎧</span> Onvy</div>
+      <h1>Голосовая <span class="grad">AI-платформа</span><br />для frontline-сотрудников</h1>
+      <p>Подсказки в ухо, рация с переводом и аналитика диалогов — помогаем продавать быстрее и качественнее.</p>
+    </div>
+
+    <div class="card" style="max-width:440px;margin:18px auto">
+      <p class="muted small" id="intro">Войди как сотрудник или менеджер (РОП).</p>
+
+      <div id="keyBlock">
+        <label>Ключ доступа</label>
+        <input id="apiKey" type="password" placeholder="Код демо" inputmode="numeric" />
+      </div>
+
+      <label>Имя</label>
+      <input id="name" placeholder="Например, Иван" />
+
+      <div class="row">
+        <div id="roleBlock">
+          <label>Роль</label>
+          <select id="role">
+            <option value="employee">Сотрудник</option>
+            <option value="rop">Менеджер (РОП)</option>
+          </select>
+        </div>
+        <div>
+          <label>Мой язык</label>
+          <select id="language">
+            <option value="ru">Русский</option>
+            <option value="en">English</option>
+            <option value="uz">O‘zbek</option>
+            <option value="kk">Қазақ</option>
+            <option value="tr">Türkçe</option>
+          </select>
+        </div>
+      </div>
+
+      <br />
+      <button id="join">Войти →</button>
+      <p class="status" id="status"></p>
+    </div>
+  </div>
+
+  <script src="/static/js/app.js"></script>
+  <script>
+    // Разбор параметров QR-приглашения: ?key=...&dept=...&role=employee
+    const q = new URLSearchParams(location.search);
+    const qsKey = q.get("key");
+    const qsDept = q.get("dept");
+    const qsRole = q.get("role");
+
+    if (qsKey) {
+      document.getElementById("apiKey").value = qsKey;
+      document.getElementById("keyBlock").style.display = "none";
+    }
+    if (qsRole === "employee") {
+      document.getElementById("role").value = "employee";
+      document.getElementById("roleBlock").style.display = "none";
+    }
+    if (qsDept) {
+      document.getElementById("intro").textContent =
+        "Ты присоединяешься к отделу по приглашению. Укажи имя и свой язык — на нём будешь слышать коллег.";
+    }
+
+    document.getElementById("join").onclick = async () => {
+      const status = document.getElementById("status");
+      const apiKey = document.getElementById("apiKey").value.trim();
+      const name = document.getElementById("name").value.trim();
+      const role = document.getElementById("role").value;
+      const language = document.getElementById("language").value;
+      if (!apiKey || !name) { status.textContent = "Заполни ключ и имя"; return; }
+
+      Onvy.save({ apiKey });
+      try {
+        const body = { name, role, language };
+        if (qsDept) body.department_id = Number(qsDept);
+        const emp = await Onvy.api("/employees", { method: "POST", body: JSON.stringify(body) });
+        Onvy.save({
+          apiKey, employeeId: emp.id, name: emp.name, role: emp.role,
+          language: emp.language, departmentId: emp.department_id,
+        });
+        window.location.href = role === "rop" ? "/rop" : "/worker";
+      } catch (e) {
+        status.textContent = "Ошибка входа: " + e.message;
+      }
+    };
+  </script>
+</body>
+</html>

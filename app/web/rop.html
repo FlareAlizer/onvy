@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Onvy — менеджер</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+  <div class="wrap wide">
+    <header class="top">
+      <div class="brand"><span class="logo">📊</span><span>Onvy — менеджер<span class="tag" id="who"></span></span></div>
+      <nav><a href="#" id="refresh">обновить</a><a href="#" id="exit">выйти</a></nav>
+    </header>
+
+    <div class="pillnav">
+      <a href="#dash">📈 Дашборд</a>
+      <a href="#talk">📻 Говорить</a>
+      <a href="#analytics">🧠 Аналитика диалогов</a>
+      <a href="#learn">🎓 Обучение</a>
+      <a href="#invite">📲 Пригласить</a>
+      <a href="#kb">📦 База знаний</a>
+      <a href="#goals">🎯 Цели</a>
+    </div>
+
+    <h2 class="sec" id="dash">Дашборд отдела</h2>
+    <div class="tiles">
+      <div class="tile"><div class="lbl">Запросы ассистенту</div><div class="val" id="tQ">0</div><div class="sub" id="tHR">ответ найден: 0%</div></div>
+      <div class="tile"><div class="lbl">Реплик связи</div><div class="val" id="tMsg">0</div><div class="sub">рация + перевод</div></div>
+      <div class="tile"><div class="lbl">Диалогов разобрано</div><div class="val" id="tAn">0</div><div class="sub" id="tSold">продаж: 0</div></div>
+      <div class="tile"><div class="lbl">Средний KPI</div><div class="val" id="tKpi">—</div><div class="sub">по разборам AI</div></div>
+    </div>
+
+    <div class="grid2">
+      <div class="card">
+        <h2 class="sec" style="margin-top:0">Команда</h2>
+        <table id="team"><thead><tr><th>Сотрудник</th><th>Статус</th><th>Очки</th><th>Запросы</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="card">
+        <h2 class="sec" style="margin-top:0">Топ запросов к ассистенту</h2>
+        <div class="log" id="top"><span class="muted small">пока пусто</span></div>
+      </div>
+    </div>
+
+    <h2 class="sec" id="talk">Говорить в наушники отдела</h2>
+    <div class="card">
+      <label style="margin-top:0">Кому</label>
+      <select id="target"><option value="">📢 Весь отдел (broadcast)</option></select>
+      <button class="talk" id="talkBtn">Держи<br />и говори</button>
+      <p class="status" id="talkStatus" style="text-align:center">Каждый услышит на своём языке</p>
+    </div>
+
+    <div class="card">
+      <h2 class="sec" style="margin-top:0">Ассистент по базе магазина</h2>
+      <div class="row">
+        <input id="askText" placeholder="Например: где лежат наушники Sony?" />
+        <button id="askSend" class="small" style="flex:0 0 110px">Спросить</button>
+      </div>
+      <p class="status" id="askStatus"></p>
+      <div id="askResult"></div>
+    </div>
+
+    <h2 class="sec" id="analytics">Аналитика диалогов (постфактум)</h2>
+    <div class="grid2">
+      <div class="card">
+        <p class="muted small" style="margin-top:0">Запиши разговор с покупателем — AI нарежет запись на диалоги
+          и разберёт каждый: KPI, этапы скрипта, ошибки и исправления.</p>
+        <button id="recBtn">● Записать разговор</button>
+        <p class="status" id="recStatus"></p>
+      </div>
+      <div class="card">
+        <p class="muted small" style="margin-top:0">Или вставь готовую транскрибацию текстом:</p>
+        <textarea id="trText" rows="4" placeholder="Здравствуйте! Подскажите, сколько стоят наушники?…"></textarea>
+        <br /><br /><button class="secondary" id="trSend">Разобрать текст</button>
+        <p class="status" id="trStatus"></p>
+      </div>
+    </div>
+    <div class="card flat" id="analysesList"><span class="muted small">Разборы появятся здесь</span></div>
+
+    <h2 class="sec" id="learn">Обучение команды</h2>
+    <div class="card">
+      <label style="margin-top:0">Тема курса</label>
+      <input id="cTopic" placeholder="Например: работа с возражением «дорого»" />
+      <label class="row" style="margin-top:10px;font-weight:600;color:var(--ink);align-items:center">
+        <input type="checkbox" id="cFromErrors" style="width:auto;flex:0 0 auto" />
+        <span style="flex:1">Собрать курс на реальных ошибках из последних разборов</span>
+      </label>
+      <br /><button id="cGen">Сгенерировать курс (AI)</button>
+      <p class="status" id="cStatus"></p>
+    </div>
+    <div class="card flat" id="coursesList"><span class="muted small">Курсы появятся здесь</span></div>
+
+    <h2 class="sec" id="invite">Пригласить в отдел</h2>
+    <div class="card" style="text-align:center">
+      <div id="qr" class="muted small">загрузка QR…</div>
+      <p class="muted small">Сканируют телефоном → входят как сотрудники этого отдела и выбирают свой язык.</p>
+    </div>
+
+    <h2 class="sec" id="kb">База знаний магазина</h2>
+    <div class="grid2">
+      <div class="card">
+        <input id="pName" placeholder="Название товара" />
+        <div class="row" style="margin-top:8px">
+          <input id="pPrice" type="number" placeholder="Цена, ₽" />
+          <input id="pStock" type="number" placeholder="Остаток, шт" />
+        </div>
+        <input id="pLocation" placeholder="Где лежит (стеллаж A3)" style="margin-top:8px" />
+        <input id="pDesc" placeholder="Характеристики" style="margin-top:8px" />
+        <input id="pAliases" placeholder="Синонимы через запятую" style="margin-top:8px" />
+        <br /><br /><button id="addP">Добавить товар</button>
+        <p class="status" id="pStatus"></p>
+      </div>
+      <div class="card">
+        <p class="muted small" style="margin-top:0">Массовая загрузка: строка = товар, поля через <b>;</b><br />
+          <code class="small">Название; цена; остаток; где; характеристики; синонимы</code></p>
+        <textarea id="bulkText" rows="5" style="font-family:monospace;font-size:12.5px"></textarea>
+        <div class="row" style="margin-top:8px">
+          <input id="bulkFile" type="file" accept=".csv,.txt" />
+          <button id="bulkLoad" class="small" style="flex:0 0 110px">Загрузить</button>
+        </div>
+        <button class="secondary" id="bulkDemo" style="margin-top:8px">Вставить демо-каталог</button>
+        <p class="status" id="bulkStatus"></p>
+      </div>
+    </div>
+
+    <h2 class="sec" id="goals">Цели сотрудникам</h2>
+    <div class="card">
+      <div class="row">
+        <select id="gEmp"></select>
+        <input id="gTitle" placeholder="Например: 20 подсказок за смену" />
+      </div>
+      <div class="row" style="margin-top:8px">
+        <input id="gTarget" type="number" value="20" />
+        <input id="gReward" type="number" value="50" />
+        <button id="addG" class="small" style="flex:0 0 150px">Поставить цель</button>
+      </div>
+      <p class="status" id="gStatus"></p>
+    </div>
+  </div>
+
+  <script src="/static/js/recorder.js"></script>
+  <script src="/static/js/app.js"></script>
+  <script src="/static/js/features.js"></script>
+  <script>
+    const s = Onvy.requireSession();
+    document.getElementById("who").textContent = s.name;
+    document.getElementById("exit").onclick = () => { Onvy.clear(); location.href = "/"; };
+
+    let deptId = s.departmentId;
+    async function ensureDept() {
+      if (deptId) return deptId;
+      deptId = (await Onvy.api("/departments"))[0].id;
+      return deptId;
+    }
+
+    async function loadQR() {
+      await ensureDept();
+      try {
+        const svg = await Onvy.apiRaw(`/departments/${deptId}/qr?base=${encodeURIComponent(location.origin)}`);
+        document.getElementById("qr").innerHTML = svg;
+      } catch (e) { document.getElementById("qr").textContent = "QR недоступен: " + e.message; }
+    }
+
+    async function loadRoster() {
+      await ensureDept();
+      const members = await Onvy.api(`/departments/${deptId}/members`);
+      const target = document.getElementById("target");
+      const cur = target.value;
+      target.innerHTML = '<option value="">📢 Весь отдел (broadcast)</option>';
+      members.filter((m) => m.id !== s.employeeId).forEach((m) => {
+        const o = document.createElement("option");
+        o.value = m.id;
+        o.textContent = `${m.name} (${m.language})${m.online ? " — онлайн" : " — офлайн"}`;
+        target.appendChild(o);
+      });
+      target.value = cur;
+    }
+
+    async function loadAnalyticsTiles() {
+      const list = await Onvy.api("/analytics/analyses");
+      document.getElementById("tAn").textContent = list.length;
+      const sold = list.filter((a) => a.is_sold).length;
+      document.getElementById("tSold").textContent = `продаж: ${sold}`;
+      document.getElementById("tKpi").textContent = list.length
+        ? Math.round(list.reduce((n, a) => n + (a.kpi_score || 0), 0) / list.length) : "—";
+      const box = document.getElementById("analysesList");
+      box.innerHTML = list.length
+        ? list.map(OnvyUI.analysisListItem).join("")
+        : '<span class="muted small">Разборы появятся здесь</span>';
+    }
+
+    async function loadDashboard() {
+      const d = await Onvy.api("/dashboard/rop");
+      document.getElementById("tQ").textContent = d.total_assistant_queries;
+      document.getElementById("tHR").textContent = `ответ найден: ${Math.round(d.assistant_hit_rate * 100)}%`;
+      document.getElementById("tMsg").textContent = d.total_messages;
+
+      const tb = document.querySelector("#team tbody");
+      tb.innerHTML = "";
+      const gsel = document.getElementById("gEmp");
+      gsel.innerHTML = "";
+      d.team.forEach((e) => {
+        const on = e.online ? '<span class="pill on">✓ онлайн</span>' : '<span class="pill off">офлайн</span>';
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${OnvyUI.esc(e.name)} <span class="muted small">${e.role}</span></td><td>${on}</td><td>${e.points}</td><td>${e.assistant_queries}</td>`;
+        tb.appendChild(tr);
+        const o = document.createElement("option");
+        o.value = e.employee_id; o.textContent = e.name; gsel.appendChild(o);
+      });
+
+      const top = document.getElementById("top");
+      top.innerHTML = d.top_queries.length ? "" : '<span class="muted small">пока пусто</span>';
+      d.top_queries.forEach((t) => {
+        const div = document.createElement("div");
+        div.className = "log-item";
+        div.innerHTML = `${OnvyUI.esc(t.query)} <span class="pill">${t.count}</span>`;
+        top.appendChild(div);
+      });
+    }
+
+    async function loadCourses() {
+      const list = await Onvy.api("/courses");
+      const box = document.getElementById("coursesList");
+      box.innerHTML = list.length ? list.map((c) => OnvyUI.courseCard(c)).join("")
+        : '<span class="muted small">Курсы появятся здесь</span>';
+      box.querySelectorAll("[data-course]").forEach((el) => {
+        const c = list.find((x) => x.id === Number(el.dataset.course));
+        el.onclick = () => OnvyUI.openCourse(c, s.employeeId);
+      });
+    }
+
+    function refreshAll() {
+      loadDashboard().catch(() => {});
+      loadRoster().catch(() => {});
+      loadAnalyticsTiles().catch(() => {});
+      loadCourses().catch(() => {});
+    }
+    document.getElementById("refresh").onclick = (e) => { e.preventDefault(); refreshAll(); };
+
+    // Менеджер онлайн + слышит голосовые ответы
+    Onvy.connectComms(
+      () => loadRoster(),
+      (m) => { if (m.type === "voice" && m.audio_base64) Onvy.playBase64Mp3(m.audio_base64); },
+      () => {}
+    );
+
+    // Говорить отделу / одному
+    Onvy.bindTalk(document.getElementById("talkBtn"), async (blob) => {
+      const st = document.getElementById("talkStatus");
+      st.textContent = "Отправляю…";
+      try {
+        const r = await Onvy.postAudio("/comms/voice", blob, {
+          sender_id: s.employeeId, recipient_id: document.getElementById("target").value || null,
+        });
+        st.textContent = `«${r.recognized_text}» → доставлено ${r.delivered_to.length}`;
+      } catch (e) { st.textContent = "Ошибка: " + e.message; }
+    });
+
+    // Ассистент текстом
+    document.getElementById("askSend").onclick = async () => {
+      const st = document.getElementById("askStatus");
+      const text = document.getElementById("askText").value.trim();
+      if (!text) return;
+      st.textContent = "Думаю…";
+      try {
+        const r = await Onvy.api("/assistant/ask-llm", {
+          method: "POST", body: JSON.stringify({ text, employee_id: s.employeeId }),
+        });
+        document.getElementById("askResult").innerHTML =
+          `<div class="log-item"><b>Вопрос:</b> ${OnvyUI.esc(text)}<br/><b>Ответ:</b> ${OnvyUI.esc(r.answer)}</div>`;
+        st.textContent = "";
+      } catch (e) { st.textContent = "Ошибка: " + e.message; }
+    };
+
+    // Запись разговора → разбор
+    let recording = false;
+    const recBtn = document.getElementById("recBtn");
+    const recStatus = document.getElementById("recStatus");
+    recBtn.onclick = async () => {
+      if (!recording) {
+        try {
+          await OnvyRecorder.start();
+          recording = true;
+          recBtn.textContent = "■ Остановить и разобрать";
+          recStatus.innerHTML = '<span class="recbar"><span class="recdot"></span> Запись идёт…</span>';
+        } catch (e) { recStatus.textContent = "Нет доступа к микрофону: " + e.message; }
+        return;
+      }
+      recording = false;
+      recBtn.disabled = true;
+      recBtn.textContent = "● Записать разговор";
+      recStatus.textContent = "Транскрибирую и разбираю… (до минуты)";
+      try {
+        const blob = await OnvyRecorder.stop();
+        const r = await Onvy.postAudio("/analytics/upload", blob, { employee_id: s.employeeId });
+        recStatus.textContent = `✅ Найдено диалогов: ${r.dialogues_found}`;
+        loadAnalyticsTiles();
+        if (r.analyses[0]) OnvyUI.showAnalysis(r.analyses[0].id);
+      } catch (e) { recStatus.textContent = "Ошибка: " + e.message; }
+      recBtn.disabled = false;
+    };
+
+    // Разбор текстовой транскрибации
+    document.getElementById("trSend").onclick = async () => {
+      const st = document.getElementById("trStatus");
+      const text = document.getElementById("trText").value.trim();
+      if (!text) return;
+      st.textContent = "Разбираю… (до минуты)";
+      try {
+        const r = await Onvy.api("/analytics/analyze-text", {
+          method: "POST", body: JSON.stringify({ text, employee_id: s.employeeId }),
+        });
+        st.textContent = `✅ Найдено диалогов: ${r.dialogues_found}`;
+        loadAnalyticsTiles();
+        if (r.analyses[0]) OnvyUI.showAnalysis(r.analyses[0].id);
+      } catch (e) { st.textContent = "Ошибка: " + e.message; }
+    };
+
+    // Генерация курса (опционально — на реальных ошибках из разборов)
+    document.getElementById("cGen").onclick = async () => {
+      const st = document.getElementById("cStatus");
+      const topic = document.getElementById("cTopic").value.trim();
+      if (!topic) { st.textContent = "Укажи тему курса"; return; }
+      st.textContent = "Генерирую курс… (до минуты)";
+      try {
+        let material = "";
+        if (document.getElementById("cFromErrors").checked) {
+          const list = await Onvy.api("/analytics/analyses");
+          const details = await Promise.all(
+            list.slice(0, 3).map((a) => Onvy.api(`/analytics/analyses/${a.id}`))
+          );
+          material = details.map((d) => {
+            const a = d.analysis || {};
+            const fixes = (a.mistakes_and_fixes || []).map((m) => `Ошибка: ${m.error}. Надо: ${m.fix}`);
+            return [...(a.weaknesses || []), ...fixes].join("\n");
+          }).join("\n");
+        }
+        await Onvy.api("/courses/generate", {
+          method: "POST", body: JSON.stringify({ topic, material }),
+        });
+        st.textContent = "✅ Курс создан";
+        document.getElementById("cTopic").value = "";
+        loadCourses();
+      } catch (e) { st.textContent = "Ошибка: " + e.message; }
+    };
+
+    // База знаний
+    document.getElementById("addP").onclick = async () => {
+      const st = document.getElementById("pStatus");
+      try {
+        await Onvy.api("/products", { method: "POST", body: JSON.stringify({
+          name: pName.value, price: +pPrice.value || 0, stock: +pStock.value || 0,
+          location: pLocation.value, description: pDesc.value, aliases: pAliases.value,
+        })});
+        st.textContent = "Добавлено ✓";
+        pName.value = pLocation.value = pDesc.value = pAliases.value = ""; pPrice.value = pStock.value = "";
+      } catch (e) { st.textContent = "Ошибка: " + e.message; }
+    };
+
+    const DEMO_CATALOG = `Наушники Sony WH-1000XM5; 34990; 4; стеллаж A3; беспроводные, шумоподавление, 30ч работы; сони, наушники, xm5
+Дрель Bosch GSB 13 RE; 5990; 12; зона B2; ударная, 600 Вт, патрон 13мм; дрель, бош, шуруповёрт
+Кофемашина De'Longhi Magnifica; 42990; 3; витрина 5; автоматическая, капучинатор; кофемашина, делонги
+Смартфон Samsung Galaxy A55; 33990; 8; стеллаж C1; 6.6", 128ГБ, 5000мАч; самсунг, телефон, галакси
+Пылесос Dyson V15; 54990; 2; зона D4; беспроводной, 60 мин; дайсон, пылесос`;
+
+    function parseCatalog(text) {
+      const items = [];
+      for (const line of text.split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        const f = line.split(";").map((x) => x.trim());
+        if (!f[0]) continue;
+        items.push({ name: f[0], price: +f[1] || 0, stock: +f[2] || 0, location: f[3] || "", description: f[4] || "", aliases: f[5] || "" });
+      }
+      return items;
+    }
+    async function uploadCatalog(text) {
+      const st = document.getElementById("bulkStatus");
+      const items = parseCatalog(text);
+      if (!items.length) { st.textContent = "Не нашёл ни одной строки"; return; }
+      try {
+        const r = await Onvy.api("/products/bulk", { method: "POST", body: JSON.stringify({ items }) });
+        st.textContent = `Загружено товаров: ${r.created} ✓`;
+      } catch (e) { st.textContent = "Ошибка: " + e.message; }
+    }
+    document.getElementById("bulkLoad").onclick = () => uploadCatalog(document.getElementById("bulkText").value);
+    document.getElementById("bulkDemo").onclick = () => { document.getElementById("bulkText").value = DEMO_CATALOG; uploadCatalog(DEMO_CATALOG); };
+    document.getElementById("bulkFile").onchange = (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => { document.getElementById("bulkText").value = reader.result; uploadCatalog(reader.result); };
+      reader.readAsText(file, "utf-8");
+    };
+
+    // Цели
+    document.getElementById("addG").onclick = async () => {
+      const st = document.getElementById("gStatus");
+      try {
+        await Onvy.api("/goals", { method: "POST", body: JSON.stringify({
+          employee_id: +gEmp.value, title: gTitle.value, target: +gTarget.value || 1, reward_points: +gReward.value || 0,
+        })});
+        st.textContent = "Цель поставлена ✓"; gTitle.value = "";
+      } catch (e) { st.textContent = "Ошибка: " + e.message; }
+    };
+
+    loadQR();
+    refreshAll();
+    setInterval(() => loadRoster().catch(() => {}), 5000);
+  </script>
+</body>
+</html>

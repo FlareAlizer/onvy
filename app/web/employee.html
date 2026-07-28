@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Onvy — мой кабинет</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <div class="brand"><span class="logo">🏆</span><span>Мой кабинет<span class="tag" id="who"></span></span></div>
+      <nav><a href="/worker">рация</a><a href="#" id="exit">выйти</a></nav>
+    </header>
+
+    <div class="tiles">
+      <div class="tile"><div class="lbl">Очки</div><div class="val" id="points">0</div></div>
+      <div class="tile"><div class="lbl">Запросы</div><div class="val" id="q">0</div></div>
+      <div class="tile"><div class="lbl">Реплики</div><div class="val" id="msg">0</div></div>
+      <div class="tile"><div class="lbl">Мой KPI</div><div class="val" id="myKpi">—</div><div class="sub">средний по разборам</div></div>
+    </div>
+
+    <h2 class="sec">Мои цели</h2>
+    <div class="card" id="goals"><span class="muted small">пока нет целей</span></div>
+
+    <h2 class="sec">Мои разборы диалогов</h2>
+    <div class="card flat" id="analyses"><span class="muted small">Запиши диалог на странице <a href="/worker">рации</a> — AI разберёт его и подскажет, что улучшить</span></div>
+
+    <h2 class="sec">Моё обучение</h2>
+    <div class="card flat" id="courses"><span class="muted small">Курсы появятся, когда менеджер их создаст</span></div>
+
+    <h2 class="sec">Мой язык</h2>
+    <div class="card">
+      <select id="lang">
+        <option value="ru">Русский</option>
+        <option value="en">English</option>
+        <option value="uz">O‘zbek</option>
+        <option value="kk">Қазақ</option>
+        <option value="tr">Türkçe</option>
+      </select>
+      <p class="status" id="langStatus"></p>
+    </div>
+  </div>
+
+  <script src="/static/js/app.js"></script>
+  <script src="/static/js/features.js"></script>
+  <script>
+    const s = Onvy.requireSession();
+    document.getElementById("who").textContent = `${s.name} · ${s.language}`;
+    document.getElementById("lang").value = s.language || "ru";
+    document.getElementById("exit").onclick = () => { Onvy.clear(); location.href = "/"; };
+
+    document.getElementById("lang").onchange = async (e) => {
+      const st = document.getElementById("langStatus");
+      try {
+        const emp = await Onvy.api(`/employees/${s.employeeId}`, {
+          method: "PATCH", body: JSON.stringify({ language: e.target.value }),
+        });
+        Onvy.save({ ...s, language: emp.language });
+        st.textContent = "Язык сохранён: " + emp.language;
+      } catch (err) { st.textContent = "Ошибка: " + err.message; }
+    };
+
+    async function load() {
+      const d = await Onvy.api(`/dashboard/employee/${s.employeeId}`);
+      document.getElementById("points").textContent = d.points;
+      document.getElementById("q").textContent = d.assistant_queries;
+      document.getElementById("msg").textContent = d.messages_sent;
+
+      const box = document.getElementById("goals");
+      box.innerHTML = d.goals.length ? "" : '<span class="muted small">пока нет целей</span>';
+      d.goals.forEach((g) => {
+        const pct = Math.round((g.progress / g.target) * 100);
+        const done = g.done ? ' <span class="pill on">✓ выполнено</span>' : "";
+        const div = document.createElement("div");
+        div.className = "log-item";
+        div.innerHTML = `<div class="spread"><b>${OnvyUI.esc(g.title)}</b>${done}</div>
+          <div class="progress" style="margin:6px 0 4px"><span style="width:${Math.min(100, pct)}%"></span></div>
+          <span class="muted small">${g.progress}/${g.target} · награда +${g.reward_points} очков</span>`;
+        box.appendChild(div);
+      });
+
+      // Мои разборы
+      const list = await Onvy.api(`/analytics/analyses?employee_id=${s.employeeId}`);
+      const abox = document.getElementById("analyses");
+      if (list.length) {
+        abox.innerHTML = list.map(OnvyUI.analysisListItem).join("");
+        const avg = Math.round(list.reduce((n, a) => n + (a.kpi_score || 0), 0) / list.length);
+        document.getElementById("myKpi").textContent = avg;
+      }
+
+      // Моё обучение
+      const courses = await Onvy.api(`/courses?employee_id=${s.employeeId}`);
+      const cbox = document.getElementById("courses");
+      if (courses.length) {
+        cbox.innerHTML = courses.map((c) => OnvyUI.courseCard(c, s.employeeId)).join("");
+        cbox.querySelectorAll("[data-course]").forEach((el) => {
+          const c = courses.find((x) => x.id === Number(el.dataset.course));
+          el.onclick = () => OnvyUI.openCourse(c, s.employeeId);
+        });
+      }
+    }
+    load().catch((e) => alert("Не удалось загрузить: " + e.message));
+  </script>
+</body>
+</html>
