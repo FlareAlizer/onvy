@@ -22,10 +22,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
 from app.db.models.employee import Employee
+from app.db.models.venue import Venue
 from app.deps import CurrentEmployee, get_redis, require_employee
 from app.schemas.auth import (
+    EmailLoginRequest,
     EmployeeLoginOption,
     LoginRequest,
+    MeOut,
     RefreshRequest,
     TokenPair,
     WsTicketOut,
@@ -107,6 +110,89 @@ async def login(
         access_token=issued.access_token,
         refresh_token=issued.refresh_token,
         expires_in=issued.expires_in,
+    )
+
+
+@router.post(
+    "/login-email", response_model=TokenPair, dependencies=[Depends(_login_rate_limited)]
+)
+async def login_email(
+    payload: EmailLoginRequest,
+    db: AsyncSession = Depends(get_session),
+    redis: Redis = Depends(get_redis),
+) -> TokenPair:
+    """Вход по почте и паролю — основной способ.
+
+    Отказ всегда один и тот же: клиент не должен по ответу отличать «такой почты
+    нет» от «пароль неверный», иначе форма входа превращается в способ узнать,
+    кто у нас работает. По той же причине проверка пароля выполняется всегда,
+    даже когда сотрудник не найден — иначе разница во времени ответа выдаст
+    существующие адреса.
+    """
+    email = auth_service.normalize_email(payload.email)
+
+    employee = (
+        await db.execute(
+            select(Employee).where(
+                Employee.email == email,
+                Employee.is_active.is_(True),
+                Employee.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+
+    if employee is not None:
+        try:
+            await auth_service.check_not_locked_out(redis, employee.id)
+        except auth_service.AccountLockedError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Слишком много неверных попыток, попробуйте позже",
+                headers={"Retry-After": str(exc.retry_after_seconds)},
+            ) from exc
+
+    password_ok = auth_service.verify_password(
+        payload.password, employee.password_hash if employee is not None else None
+    )
+
+    if employee is None or not password_ok:
+        if employee is not None:
+            await auth_service.register_failed_pin_attempt(redis, employee.id)
+        raise _invalid_credentials()
+
+    await auth_service.clear_pin_attempts(redis, employee.id)
+    issued = await auth_service.issue_token_pair(
+        redis, employee_id=employee.id, venue_id=employee.venue_id, role=employee.role
+    )
+    logger.info("Вход по почте: сотрудник %s (точка %s)", employee.id, employee.venue_id)
+    return TokenPair(
+        access_token=issued.access_token,
+        refresh_token=issued.refresh_token,
+        expires_in=issued.expires_in,
+    )
+
+
+@router.get("/me", response_model=MeOut)
+async def me(
+    current: CurrentEmployee = Depends(require_employee),
+    db: AsyncSession = Depends(get_session),
+) -> MeOut:
+    """Кто вошёл. Клиент по этому решает, какой кабинет показывать."""
+    employee = await db.get(Employee, current.id)
+    if employee is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Сотрудник не найден"
+        )
+    venue = await db.get(Venue, employee.venue_id)
+    return MeOut(
+        id=employee.id,
+        venue_id=employee.venue_id,
+        venue_name=venue.name if venue else "",
+        name=employee.name,
+        nickname=employee.nickname,
+        email=employee.email,
+        role=employee.role,
+        language=employee.language,
     )
 
 

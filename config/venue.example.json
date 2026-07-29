@@ -1,5 +1,6 @@
 {
-  "_комментарий": "Шаблон конфига точки для scripts/seed_venue.py setup. Скопируйте в venue.json, замените людей на настоящих. Роли: waiter, kitchen, bar, host, manager. Языки: ru, uz, kk, ky, en, tg. Правила выбора кличек — в docs/runbook-pilot-setup.md, скрипт проверит их сам и откажется работать с плохими.",
+  "_комментарий": "Шаблон конфига точки для scripts/seed_venue.py setup. Скопируйте в venue.json, замените людей на настоящих. Роли: waiter, kitchen, bar, host, manager. Языки: ru, uz, kk, ky, en, tg. Правила выбора кличек — в docs/runbook-pilot-setup.md, скрипт проверит их сам.",
+  "_про_вход": "email указывайте тем, кто работает через кабинет (управляющий, хостес). Им скрипт сгенерирует пароль и покажет его один раз. Линейному персоналу почта не нужна — официант в зале входит по PIN одной рукой, не глядя на экран.",
 
   "venue": {
     "name": "Чайхана",
@@ -13,7 +14,7 @@
     {"name": "Улугбек Каримов",      "nickname": "Шеф",    "role": "kitchen", "language": "uz"},
     {"name": "Бахтиёр Назаров",      "nickname": "Бахти",  "role": "kitchen", "language": "tg"},
     {"name": "Сергей Иванов",        "nickname": "Серёга", "role": "bar",     "language": "ru"},
-    {"name": "Динара Абаева",        "nickname": "Динара", "role": "host",    "language": "kk"},
-    {"name": "Гульнара Садыкова",    "nickname": "Гуля",   "role": "manager", "language": "ru"}
+    {"name": "Динара Абаева",        "nickname": "Динара", "role": "host",    "language": "kk", "email": "hostes@chayhana.ru"},
+    {"name": "Гульнара Садыкова",    "nickname": "Гуля",   "role": "manager", "language": "ru", "email": "rop@chayhana.ru"}
   ]
 }

@@ -16,6 +16,7 @@ dependencies = [
     "pyjwt",
     "argon2-cffi",
     "segno",
+    "pydantic[email]>=2.13.4",
 ]
 
 [dependency-groups]
@@ -36,6 +37,12 @@ target-version = "py312"
 select = ["E", "F", "I", "UP", "B", "ASYNC"]
 # Depends()/Header() в дефолтах аргументов — идиома FastAPI, не баг.
 extend-ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+# Фикстуры pytest переиспользуются импортом из соседнего модуля — для линтера
+# это выглядит как переопределение неиспользуемого имени, но именно так pytest
+# их и находит. Копировать стенд вместо импорта было бы хуже.
+"tests/*" = ["F811"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

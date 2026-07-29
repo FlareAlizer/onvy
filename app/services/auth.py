@@ -97,6 +97,42 @@ def verify_pin(pin: str, pin_hash: str | None) -> bool:
     return pin_hash is not None
 
 
+# --- Пароль -----------------------------------------------------------------------
+
+
+def hash_password(password: str) -> str:
+    """Хешировать пароль для хранения (argon2id, тот же алгоритм что и для PIN)."""
+    return _password_hasher.hash(password)
+
+
+def verify_password(password: str, password_hash: str | None) -> bool:
+    """Сверить пароль с хешем.
+
+    password_hash=None означает две разные ситуации — такой почты нет вообще
+    либо у сотрудника вход только по PIN. Снаружи они неразличимы: и там и там
+    выполняется полноценная argon2-проверка на фиктивном хеше, поэтому по
+    времени ответа нельзя перебрать существующие адреса.
+    """
+    try:
+        _password_hasher.verify(password_hash or _DUMMY_PIN_HASH, password)
+    except (
+        argon2_exceptions.VerifyMismatchError,
+        argon2_exceptions.VerificationError,
+        argon2_exceptions.InvalidHashError,
+    ):
+        return False
+    return password_hash is not None
+
+
+def normalize_email(email: str) -> str:
+    """Привести почту к каноническому виду для поиска и хранения.
+
+    Регистр в адресе не значим, а пробелы по краям приезжают из автозаполнения
+    и с мобильных клавиатур постоянно.
+    """
+    return email.strip().lower()
+
+
 # --- Блокировка после N неудачных попыток (Redis) -------------------------------
 
 _ATTEMPTS_KEY = "auth:pin_attempts:{employee_id}"

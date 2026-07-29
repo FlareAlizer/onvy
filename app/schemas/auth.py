@@ -5,7 +5,7 @@
 см. app/services/auth.py и app/api/auth.py.
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 
 class EmployeeLoginOption(BaseModel):
@@ -27,6 +27,30 @@ class LoginRequest(BaseModel):
 
     employee_id: int
     pin: str = Field(min_length=4, max_length=12)
+
+
+class EmailLoginRequest(BaseModel):
+    """Тело POST /api/auth/login-email — основной способ входа.
+
+    Пароль ограничен снизу восемью символами, сверху — 128: длинную парольную
+    фразу пускаем, но не даём положить сервер гигабайтом на argon2.
+    """
+
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=128)
+
+
+class MeOut(BaseModel):
+    """Кто вошёл — клиент рисует по этому кабинет и подставляет имя."""
+
+    id: int
+    venue_id: int
+    venue_name: str
+    name: str
+    nickname: str | None
+    email: str | None
+    role: str
+    language: str
 
 
 class RefreshRequest(BaseModel):

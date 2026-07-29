@@ -132,6 +132,79 @@ export async function apiPublic<T>(path: string, options: RequestInit = {}): Pro
   return (await resp.json()) as T;
 }
 
+type TokenPairResponse = {
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+};
+
+export type Me = {
+  id: number;
+  venue_id: number;
+  venue_name: string;
+  name: string;
+  nickname: string | null;
+  email: string | null;
+  role: string;
+  language: string;
+};
+
+/** Кто вошёл. По роли решается, какой кабинет показывать. */
+export function fetchMe(): Promise<Me> {
+  return api<Me>('/auth/me');
+}
+
+/** Собрать сессию из пары токенов: кто это — спрашиваем у сервера, не у клиента. */
+async function completeLogin(tokens: TokenPairResponse): Promise<Session> {
+  // Токены кладём до запроса /me — иначе запросу нечем авторизоваться.
+  saveSession({
+    accessToken: tokens.access_token,
+    refreshToken: tokens.refresh_token,
+    employeeId: 0,
+    venueId: 0,
+    role: '',
+    name: '',
+    language: 'ru',
+  });
+  try {
+    const me = await fetchMe();
+    const session: Session = {
+      accessToken: tokens.access_token,
+      refreshToken: tokens.refresh_token,
+      employeeId: me.id,
+      venueId: me.venue_id,
+      role: me.role,
+      name: me.name,
+      language: me.language,
+    };
+    saveSession(session);
+    return session;
+  } catch (error) {
+    // Не оставляем половинчатую сессию: с ней приложение показало бы пустой
+    // кабинет вместо экрана входа.
+    clearSession();
+    throw error;
+  }
+}
+
+/** Вход по почте и паролю — основной способ. */
+export async function loginWithEmail(email: string, password: string): Promise<Session> {
+  const tokens = await apiPublic<TokenPairResponse>('/auth/login-email', {
+    method: 'POST',
+    body: JSON.stringify({ email: email.trim(), password }),
+  });
+  return completeLogin(tokens);
+}
+
+/** Быстрый вход по PIN — для смены в зале, где почту вводить неудобно. */
+export async function loginWithPin(employeeId: number, pin: string): Promise<Session> {
+  const tokens = await apiPublic<TokenPairResponse>('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ employee_id: employeeId, pin }),
+  });
+  return completeLogin(tokens);
+}
+
 export type StageMetrics = {
   asr_ms: number;
   search_ms: number;

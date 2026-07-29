@@ -36,7 +36,7 @@ from app.db.models.enums import EMPLOYEE_ROLES, LANGUAGES
 from app.db.models.venue import Venue
 from app.domain.intents import Group
 from app.domain.nicknames import check_nicknames
-from app.services.auth import hash_pin
+from app.services.auth import hash_password, hash_pin
 
 # --- PIN ------------------------------------------------------------------
 
@@ -76,6 +76,25 @@ def generate_unique_pins(count: int) -> list[str]:
     return pins
 
 
+# Пароль для входа по почте. Слова из простого словаря вместо случайных
+# символов: пароль диктуют голосом и переписывают с листа, а «bK7#qZ» в этих
+# условиях превращается в звонок «у меня не работает вход».
+# Три слова из этого набора плюс двузначное число — свыше 10^9 вариантов,
+# для входа с блокировкой после пяти попыток этого достаточно с запасом.
+_PASSWORD_WORDS = (
+    "чайник", "лепёшка", "тандыр", "шафран", "гранат", "казан", "изюм",
+    "курага", "миндаль", "базилик", "кинза", "зира", "барбарис", "халва",
+    "пиала", "дастархан", "самовар", "урюк", "кунжут", "корица",
+)
+
+
+def generate_password() -> str:
+    """Сгенерировать пароль, который не стыдно продиктовать вслух."""
+    rng = secrets.SystemRandom()
+    words = rng.sample(_PASSWORD_WORDS, 3)
+    return "-".join(words) + f"-{rng.randrange(10, 100)}"
+
+
 def _assert_unique_pins(pins: list[str]) -> None:
     if len(set(pins)) != len(pins):
         duplicates = sorted({p for p in pins if pins.count(p) > 1})
@@ -111,6 +130,9 @@ class StaffSpec:
     # (app/domain/intents.py, Colleague). Необязательна: без неё обращение
     # ищут по первому слову полного имени.
     nickname: str | None = None
+    # Почта для входа. Необязательна: у линейного персонала её может не быть,
+    # им хватает быстрого входа по PIN.
+    email: str | None = None
 
 
 def parse_staff_spec(raw: dict, *, line: int | None = None) -> StaffSpec:
@@ -136,7 +158,13 @@ def parse_staff_spec(raw: dict, *, line: int | None = None) -> StaffSpec:
 
     nickname = str(raw.get("nickname") or "").strip() or None
 
-    return StaffSpec(name=name, role=role, language=language, nickname=nickname)
+    email = str(raw.get("email") or "").strip().lower() or None
+    if email is not None and ("@" not in email or "." not in email.split("@")[-1]):
+        raise ValueError(f"Почта {email!r}{where} не похожа на адрес")
+
+    return StaffSpec(
+        name=name, role=role, language=language, nickname=nickname, email=email
+    )
 
 
 @dataclass(frozen=True)
@@ -188,6 +216,14 @@ def load_venue_seed_config(path: Path) -> VenueSeedConfig:
         raise ValueError(
             f"В конфиге повторяются имена сотрудников: {duplicates} — "
             "добавьте фамилию или уточнение, seed различает сотрудников по имени"
+        )
+
+    emails = [s.email for s in staff if s.email]
+    повторы = sorted({e for e in emails if emails.count(e) > 1})
+    if повторы:
+        raise ValueError(
+            f"В конфиге повторяются почты: {повторы} — по почте входят, "
+            "один адрес не может принадлежать двоим"
         )
 
     # Клички проверяем здесь же, до записи в БД: плохая кличка ломает голосовую
@@ -311,6 +347,9 @@ class CreatedStaffEntry:
     # Кличка попадает в распечатку не для красоты: смена должна знать, как
     # окликать друг друга голосом, иначе адресация останется неиспользованной.
     nickname: str | None = None
+    email: str | None = None
+    # Пароль виден единственный раз — здесь. В базе только argon2id-хеш.
+    password: str | None = None
 
 
 @dataclass(frozen=True)
@@ -345,8 +384,10 @@ async def seed_venue(session: AsyncSession, config: VenueSeedConfig) -> VenueSee
             to_create.append(spec)
 
     pins = generate_unique_pins(len(to_create))
+    # Пароли для тех, у кого есть почта. Как и PIN, показываются один раз.
+    passwords = [generate_password() for _ in to_create]
     created: list[CreatedStaffEntry] = []
-    for spec, pin in zip(to_create, pins, strict=True):
+    for spec, pin, password in zip(to_create, pins, passwords, strict=True):
         employee = Employee(
             venue_id=venue.id,
             name=spec.name,
@@ -354,6 +395,8 @@ async def seed_venue(session: AsyncSession, config: VenueSeedConfig) -> VenueSee
             role=spec.role,
             language=spec.language,
             pin_hash=hash_pin(pin),
+            email=spec.email,
+            password_hash=hash_password(password) if spec.email else None,
         )
         session.add(employee)
         await session.flush()
@@ -369,6 +412,8 @@ async def seed_venue(session: AsyncSession, config: VenueSeedConfig) -> VenueSee
                 language=spec.language,
                 pin=pin,
                 nickname=spec.nickname,
+                email=spec.email,
+                password=password if spec.email else None,
             )
         )
 
@@ -391,8 +436,9 @@ def format_pin_roster(result: VenueSeedResult) -> str:
     if not result.created_staff:
         lines.append("Новых сотрудников не создано (все уже были заведены раньше).")
     else:
+        lines.append("ДОСТУПЫ ДЛЯ ПЕРВОЙ СМЕНЫ — раздать лично, не пересылать в общий чат.")
+        lines.append("")
         header = f"{'Имя':<22} {'Кличка':<12} {'Роль':<10} {'Язык':<6} PIN"
-        lines.append("PIN-КОДЫ ДЛЯ ПЕРВОЙ СМЕНЫ — раздать лично, не пересылать в общий чат.")
         lines.append(header)
         lines.append("-" * len(header))
         for entry in result.created_staff:
@@ -401,6 +447,17 @@ def format_pin_roster(result: VenueSeedResult) -> str:
                 f"{entry.name:<22} {кличка:<12} {entry.role:<10} "
                 f"{entry.language:<6} {entry.pin}"
             )
+
+        # Почта и пароль — отдельным блоком: они есть не у всех, и в общей
+        # таблице длинный пароль сломал бы колонки.
+        с_почтой = [e for e in result.created_staff if e.email]
+        if с_почтой:
+            lines.append("")
+            lines.append("ВХОД ПО ПОЧТЕ (пароль показывается один раз, в базе только хеш):")
+            for entry in с_почтой:
+                lines.append(f"  {entry.name}")
+                lines.append(f"    почта:  {entry.email}")
+                lines.append(f"    пароль: {entry.password}")
 
     if result.skipped_staff:
         lines.append("")

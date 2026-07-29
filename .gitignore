@@ -34,3 +34,6 @@ venv/
 .claude-flow/
 .hive-mind/
 memory/
+
+# Переданные исходники (оригинал сохранён, в сборку не входит)
+incoming/
