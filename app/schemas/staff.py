@@ -10,7 +10,7 @@ script_compliance фронта (EmployeeStats, Dialog из frontend/src/types.ts
 
 from datetime import date, datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 
 class EmployeeOut(BaseModel):
@@ -23,6 +23,38 @@ class EmployeeOut(BaseModel):
     language: str
     is_active: bool
     hired_at: datetime
+
+
+class StaffCreateRequest(BaseModel):
+    """Добавить человека в смену.
+
+    Почта необязательна: линейному персоналу она не нужна, им хватает входа по
+    PIN — официант вводит его одной рукой, не глядя. Почту заводят тем, кто
+    работает через кабинет.
+    """
+
+    name: str = Field(min_length=2, max_length=120)
+    role: str = Field(description="waiter, kitchen, bar, host или manager")
+    language: str = Field(default="ru", description="ru, uz, kk, ky, en или tg")
+    nickname: str | None = Field(default=None, max_length=60)
+    email: EmailStr | None = None
+
+
+class StaffAccessOut(BaseModel):
+    """Выданные доступы. Показываются ОДИН раз — в базе только argon2id-хеши.
+
+    Посмотреть их повторно нельзя даже управляющему: это не ограничение
+    интерфейса, а свойство хранения. Забыли — перевыдайте.
+    """
+
+    employee_id: int
+    name: str
+    nickname: str | None
+    role: str
+    language: str
+    pin: str
+    email: str | None = None
+    password: str | None = None
 
 
 # --- Статистика сотрудника (п.2 задания) -----------------------------------------

@@ -6,6 +6,7 @@ import {
   LayoutDashboard,
   Sparkles,
   ListX,
+  IdCard,
   Store,
   Users,
   UsersRound,
@@ -21,9 +22,11 @@ import Points from './rop/Points';
 import PilotReport from './rop/PilotReport';
 import Knowledge from './Knowledge';
 import ManagerView from '../../views/ManagerView';
+import StaffTab from '../../components/manager/StaffTab';
 
 type Tab =
   | 'live'
+  | 'roster'
   | 'overview'
   | 'analytics'
   | 'staff'
@@ -49,7 +52,7 @@ export default function ROPDashboard() {
    * Приоритет задаётся фокусом: культура, операции или продажи.
    */
   const nav = useMemo(() => {
-    const items: Record<Exclude<Tab, 'live'>, NavItem> = {
+    const items: Record<Exclude<Tab, 'live' | 'roster'>, NavItem> = {
       overview: { id: 'overview', label: 'Дашборд', icon: LayoutDashboard },
       analytics: { id: 'analytics', label: `Аналитика ${L.interactionGenitivePlural}`, icon: ChartNoAxesCombined },
       points: { id: 'points', label: 'Торговые точки', icon: Store, badge: data.points.length || undefined },
@@ -59,7 +62,7 @@ export default function ROPDashboard() {
       knowledge: { id: 'knowledge', label: 'База знаний', icon: BookOpen },
       pilot: { id: 'pilot', label: 'Отчёт пилота', icon: ClipboardCheck },
     };
-    const order = FOCUS_META[focus].nav as Exclude<Tab, 'live'>[];
+    const order = FOCUS_META[focus].nav as Exclude<Tab, 'live' | 'roster'>[];
     const primary = order.slice(0, 4).map((k) => items[k]);
     const secondary = order.slice(4).map((k) => items[k]);
     return [
@@ -67,7 +70,10 @@ export default function ROPDashboard() {
       // что работает на настоящих данных заведения прямо сейчас.
       {
         group: 'Сейчас в зале',
-        items: [{ id: 'live', label: 'Стоп-лист и смена', icon: ListX } as NavItem],
+        items: [
+          { id: 'live', label: 'Стоп-лист и смена', icon: ListX } as NavItem,
+          { id: 'roster', label: 'Состав и доступы', icon: IdCard } as NavItem,
+        ],
       },
       { group: FOCUS_META[focus].label, items: primary },
       { group: 'Остальное', items: secondary },
@@ -77,6 +83,7 @@ export default function ROPDashboard() {
   return (
     <Shell nav={nav} active={tab} onNavigate={(id) => setTab(id as Tab)}>
       {tab === 'live' && <ManagerView />}
+      {tab === 'roster' && <StaffTab />}
       {tab === 'overview' && <Overview onGoTo={(t) => setTab(t as Tab)} />}
       {tab === 'analytics' && <Analytics />}
       {tab === 'staff' && <Staff />}

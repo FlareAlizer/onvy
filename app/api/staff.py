@@ -5,16 +5,22 @@
 manager, что app/api/kpi.py).
 """
 
+import logging
 from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.menu import require_own_venue
 from app.db import get_session
+from app.db.models.comm_group import CommGroup, EmployeeCommGroup
 from app.db.models.employee import Employee
+from app.db.models.enums import EMPLOYEE_ROLES, LANGUAGES
+from app.db.seed import ROLE_GROUPS, generate_password, generate_unique_pins
 from app.deps import CurrentEmployee, require_employee, require_manager
+from app.domain.nicknames import check_nicknames
 from app.schemas.staff import (
     EmployeeOut,
     EmployeeStatsOut,
@@ -23,8 +29,13 @@ from app.schemas.staff import (
     ShiftDetailOut,
     ShiftEventOut,
     ShiftSummaryOut,
+    StaffAccessOut,
+    StaffCreateRequest,
 )
+from app.services import auth as auth_service
 from app.services import stats
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/venues/{venue_id}", tags=["staff"])
 
@@ -209,3 +220,191 @@ async def faq_gaps(
         )
         for item in gaps
     ]
+
+
+# --- Управление составом смены ----------------------------------------------------
+
+
+async def _venue_menu_words(db: AsyncSession, venue_id: int) -> list[str]:
+    """Названия блюд точки — по ним проверяется, что кличка не конфликтует.
+
+    Если меню прочитать не удалось, возвращаем пустой список и проверяем кличку
+    без него. Совпадение с блюдом — неприятность (вопрос про плов уедет
+    человеку), а невозможность завести официанта в смену — остановка работы.
+    Второе хуже, поэтому эта проверка не имеет права блокировать добавление.
+    """
+    from app.db.models.menu_item import MenuItem
+
+    try:
+        rows = (
+            await db.execute(
+                select(MenuItem.name).where(
+                    MenuItem.venue_id == venue_id, MenuItem.deleted_at.is_(None)
+                )
+            )
+        ).scalars().all()
+    except SQLAlchemyError as exc:
+        logger.warning(
+            "Не смог прочитать меню точки %s (%s) — кличку проверяю без него",
+            venue_id,
+            exc,
+        )
+        return []
+    return list(rows)
+
+
+@router.post("/staff", response_model=StaffAccessOut, status_code=status.HTTP_201_CREATED)
+async def create_staff(
+    venue_id: int,
+    payload: StaffCreateRequest,
+    current: CurrentEmployee = Depends(require_manager),
+    db: AsyncSession = Depends(get_session),
+) -> StaffAccessOut:
+    """Добавить человека в смену и выдать ему доступ.
+
+    PIN генерируется всегда, пароль — только если указана почта. И то и другое
+    показывается в ответе единственный раз: в базе лежат argon2id-хеши, обратно
+    их не прочитать. Забыли — перевыдайте, это отдельная кнопка.
+    """
+    require_own_venue(current, venue_id)
+
+    if payload.role not in EMPLOYEE_ROLES:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Неизвестная роль. Допустимо: {', '.join(EMPLOYEE_ROLES)}",
+        )
+    if payload.language not in LANGUAGES:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Неизвестный язык. Допустимо: {', '.join(LANGUAGES)}",
+        )
+
+    name = payload.name.strip()
+    существующие = (
+        await db.execute(
+            select(Employee.name, Employee.nickname).where(
+                Employee.venue_id == venue_id, Employee.deleted_at.is_(None)
+            )
+        )
+    ).all()
+
+    # Сотрудников различаем по имени — двух «Азизов» без уточнения не пускаем.
+    if any(имя.casefold() == name.casefold() for имя, _ in существующие):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail=f"«{name}» уже есть в смене. Добавьте фамилию или уточнение.",
+        )
+
+    if payload.nickname:
+        клички = [n for _, n in существующие if n] + [payload.nickname]
+        проблемы = check_nicknames(
+            клички, menu_names=await _venue_menu_words(db, venue_id)
+        )
+        # Показываем только то, что касается новой клички: чужие проблемы,
+        # если они были заведены раньше, добавлению не мешают.
+        своя = [p for p in проблемы if p.nickname == payload.nickname]
+        if своя:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(своя[0])
+            )
+
+    email = auth_service.normalize_email(payload.email) if payload.email else None
+    if email is not None:
+        занято = (
+            await db.execute(
+                select(Employee.id).where(
+                    Employee.email == email, Employee.deleted_at.is_(None)
+                )
+            )
+        ).scalar_one_or_none()
+        if занято is not None:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, detail="Эта почта уже занята"
+            )
+
+    pin = generate_unique_pins(1)[0]
+    password = generate_password() if email else None
+
+    employee = Employee(
+        venue_id=venue_id,
+        name=name,
+        nickname=payload.nickname.strip() if payload.nickname else None,
+        role=payload.role,
+        language=payload.language,
+        email=email,
+        password_hash=auth_service.hash_password(password) if password else None,
+        pin_hash=auth_service.hash_pin(pin),
+    )
+    db.add(employee)
+    await db.flush()
+
+    # Группы связи по роли: без них человека не будет слышно в рации.
+    группы = (
+        await db.execute(
+            select(CommGroup.id, CommGroup.name).where(
+                CommGroup.venue_id == venue_id, CommGroup.deleted_at.is_(None)
+            )
+        )
+    ).all()
+    по_имени = {имя: gid for gid, имя in группы}
+    for group in ROLE_GROUPS[payload.role]:
+        gid = по_имени.get(group.value)
+        if gid is not None:
+            db.add(EmployeeCommGroup(employee_id=employee.id, comm_group_id=gid))
+
+    await db.commit()
+
+    return StaffAccessOut(
+        employee_id=employee.id,
+        name=employee.name,
+        nickname=employee.nickname,
+        role=employee.role,
+        language=employee.language,
+        pin=pin,
+        email=email,
+        password=password,
+    )
+
+
+@router.post("/staff/{employee_id}/reset-access", response_model=StaffAccessOut)
+async def reset_access(
+    venue_id: int,
+    employee_id: int,
+    current: CurrentEmployee = Depends(require_manager),
+    db: AsyncSession = Depends(get_session),
+) -> StaffAccessOut:
+    """Перевыдать PIN (и пароль, если есть почта).
+
+    Единственный способ вернуть доступ забывшему: посмотреть старый нельзя,
+    в базе только хеш. Прежние PIN и пароль сразу перестают работать.
+    """
+    require_own_venue(current, venue_id)
+
+    employee = await db.get(Employee, employee_id)
+    if (
+        employee is None
+        or employee.venue_id != venue_id
+        or employee.deleted_at is not None
+    ):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Сотрудник не найден")
+
+    pin = generate_unique_pins(1)[0]
+    employee.pin_hash = auth_service.hash_pin(pin)
+
+    password = None
+    if employee.email:
+        password = generate_password()
+        employee.password_hash = auth_service.hash_password(password)
+
+    await db.commit()
+
+    return StaffAccessOut(
+        employee_id=employee.id,
+        name=employee.name,
+        nickname=employee.nickname,
+        role=employee.role,
+        language=employee.language,
+        pin=pin,
+        email=employee.email,
+        password=password,
+    )
