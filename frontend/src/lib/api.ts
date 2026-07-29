@@ -25,7 +25,10 @@ export function getSession(): Session | null {
     const raw = localStorage.getItem(KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Session;
-    return parsed?.accessToken && parsed?.employeeId ? parsed : null;
+    // Проверяем только токен. Раньше здесь стояло && parsed.employeeId —
+    // и сессия с id=0 считалась невалидной, потому что ноль в JS ложный.
+    // Из-за этого свежий вход рушился: запрос уходил без авторизации.
+    return parsed?.accessToken ? parsed : null;
   } catch {
     return null;
   }
@@ -154,37 +157,34 @@ export function fetchMe(): Promise<Me> {
   return api<Me>('/auth/me');
 }
 
-/** Собрать сессию из пары токенов: кто это — спрашиваем у сервера, не у клиента. */
+/** То же, но с явным токеном — для момента входа, когда сессии ещё нет. */
+async function fetchMeWithToken(accessToken: string): Promise<Me> {
+  const resp = await fetch('/api/auth/me', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!resp.ok) throw new ApiError(await readError(resp), resp.status);
+  return (await resp.json()) as Me;
+}
+
+/** Собрать сессию из пары токенов: кто это — спрашиваем у сервера, не у клиента.
+ *
+ * Токен передаём в запрос напрямую и в хранилище пишем только готовую сессию.
+ * Промежуточная запись «токен есть, остальное пустое» уже один раз стоила нам
+ * рабочего входа, и полагаться на её валидность больше не будем.
+ */
 async function completeLogin(tokens: TokenPairResponse): Promise<Session> {
-  // Токены кладём до запроса /me — иначе запросу нечем авторизоваться.
-  saveSession({
+  const me = await fetchMeWithToken(tokens.access_token);
+  const session: Session = {
     accessToken: tokens.access_token,
     refreshToken: tokens.refresh_token,
-    employeeId: 0,
-    venueId: 0,
-    role: '',
-    name: '',
-    language: 'ru',
-  });
-  try {
-    const me = await fetchMe();
-    const session: Session = {
-      accessToken: tokens.access_token,
-      refreshToken: tokens.refresh_token,
-      employeeId: me.id,
-      venueId: me.venue_id,
-      role: me.role,
-      name: me.name,
-      language: me.language,
-    };
-    saveSession(session);
-    return session;
-  } catch (error) {
-    // Не оставляем половинчатую сессию: с ней приложение показало бы пустой
-    // кабинет вместо экрана входа.
-    clearSession();
-    throw error;
-  }
+    employeeId: me.id,
+    venueId: me.venue_id,
+    role: me.role,
+    name: me.name,
+    language: me.language,
+  };
+  saveSession(session);
+  return session;
 }
 
 /** Вход по почте и паролю — основной способ. */
