@@ -65,6 +65,11 @@ COPY --from=python-builder /opt/venv /opt/venv
 COPY app/ ./app/
 COPY alembic/ ./alembic/
 COPY alembic.ini ./alembic.ini
+# Скрипты подготовки точки и шаблон конфига: их запускают внутри контейнера
+# (docs/runbook-pilot-setup.md), значит они обязаны быть в образе — иначе
+# завести смену на боевом сервере нечем.
+COPY scripts/ ./scripts/
+COPY config/ ./config/
 COPY --from=frontend-builder /frontend/dist ./frontend/dist
 
 RUN chown -R onvy:onvy /app
