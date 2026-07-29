@@ -35,6 +35,7 @@ from app.db.models.employee import Employee
 from app.db.models.enums import EMPLOYEE_ROLES, LANGUAGES
 from app.db.models.venue import Venue
 from app.domain.intents import Group
+from app.domain.nicknames import check_nicknames
 from app.services.auth import hash_pin
 
 # --- PIN ------------------------------------------------------------------
@@ -189,6 +190,15 @@ def load_venue_seed_config(path: Path) -> VenueSeedConfig:
             "добавьте фамилию или уточнение, seed различает сотрудников по имени"
         )
 
+    # Клички проверяем здесь же, до записи в БД: плохая кличка ломает голосовую
+    # адресацию тихо — пилот запустится, а обращения начнут уезжать не туда.
+    problems = check_nicknames([s.nickname for s in staff])
+    if problems:
+        raise ValueError(
+            "Клички не годятся для голосового обращения:\n  "
+            + "\n  ".join(str(problem) for problem in problems)
+        )
+
     return VenueSeedConfig(
         venue_name=venue_name,
         timezone=timezone,
@@ -298,6 +308,9 @@ class CreatedStaffEntry:
     role: str
     language: str
     pin: str
+    # Кличка попадает в распечатку не для красоты: смена должна знать, как
+    # окликать друг друга голосом, иначе адресация останется неиспользованной.
+    nickname: str | None = None
 
 
 @dataclass(frozen=True)
@@ -350,7 +363,13 @@ async def seed_venue(session: AsyncSession, config: VenueSeedConfig) -> VenueSee
         await _assign_groups(session, employee, target_groups)
 
         created.append(
-            CreatedStaffEntry(name=spec.name, role=spec.role, language=spec.language, pin=pin)
+            CreatedStaffEntry(
+                name=spec.name,
+                role=spec.role,
+                language=spec.language,
+                pin=pin,
+                nickname=spec.nickname,
+            )
         )
 
     return VenueSeedResult(
@@ -372,12 +391,16 @@ def format_pin_roster(result: VenueSeedResult) -> str:
     if not result.created_staff:
         lines.append("Новых сотрудников не создано (все уже были заведены раньше).")
     else:
-        header = f"{'Имя':<20} {'Роль':<10} {'Язык':<6} PIN"
+        header = f"{'Имя':<22} {'Кличка':<12} {'Роль':<10} {'Язык':<6} PIN"
         lines.append("PIN-КОДЫ ДЛЯ ПЕРВОЙ СМЕНЫ — раздать лично, не пересылать в общий чат.")
         lines.append(header)
         lines.append("-" * len(header))
         for entry in result.created_staff:
-            lines.append(f"{entry.name:<20} {entry.role:<10} {entry.language:<6} {entry.pin}")
+            кличка = entry.nickname or "—"
+            lines.append(
+                f"{entry.name:<22} {кличка:<12} {entry.role:<10} "
+                f"{entry.language:<6} {entry.pin}"
+            )
 
     if result.skipped_staff:
         lines.append("")

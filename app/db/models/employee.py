@@ -1,6 +1,15 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, String, func
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    func,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -27,6 +36,16 @@ class Employee(TimestampMixin, SoftDeleteMixin, Base):
     __table_args__ = (
         CheckConstraint(sql_in("role", EMPLOYEE_ROLES), name="role_valid"),
         CheckConstraint(sql_in("language", LANGUAGES), name="language_valid"),
+        # Кличка уникальна в точке: двух «Азизов» на смене голосовая адресация
+        # развести не сможет. Индекс частичный — уволенные освобождают кличку,
+        # а сотрудники без клички индекс не занимают.
+        Index(
+            "ux_employees_venue_nickname_active",
+            "venue_id",
+            "nickname",
+            unique=True,
+            postgresql_where=text("nickname IS NOT NULL AND deleted_at IS NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

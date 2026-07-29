@@ -93,6 +93,14 @@ _GROUP_WORDS: tuple[tuple[str, Group], ...] = (
     ("всем", Group.EVERYONE),
 )
 
+# Слова, которые уже что-то значат для голосовой адресации. Кличка сотрудника
+# не должна ни одному из них соответствовать, иначе «бар, подойди» перестанет
+# быть обращением к бару. Используется проверкой в app/domain/nicknames.py.
+RESERVED_ADDRESS_WORDS: frozenset[str] = frozenset(
+    [spoken for spoken, _ in _GROUP_WORDS] + list(_WAKE_VARIANTS) + list(_WAKE_LATIN)
+)
+
+
 # Глаголы обращения. После них следующее слово-адресат — точно обращение.
 _ADDRESS_VERBS = (
     "скажи", "скажите", "передай", "передайте", "сообщи", "сообщите",

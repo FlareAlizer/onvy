@@ -27,7 +27,18 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     op.add_column("employees", sa.Column("nickname", sa.String(length=60), nullable=True))
+    # Две одинаковые клички в одной точке делают голосовое обращение лотереей:
+    # система не может знать, кого из двоих зовут. Индекс частичный — уволенные
+    # (deleted_at) освобождают кличку, а NULL их не занимает вовсе.
+    op.create_index(
+        "ux_employees_venue_nickname_active",
+        "employees",
+        ["venue_id", "nickname"],
+        unique=True,
+        postgresql_where=sa.text("nickname IS NOT NULL AND deleted_at IS NULL"),
+    )
 
 
 def downgrade() -> None:
+    op.drop_index("ux_employees_venue_nickname_active", table_name="employees")
     op.drop_column("employees", "nickname")
