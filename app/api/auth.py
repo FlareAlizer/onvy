@@ -116,8 +116,13 @@ async def refresh(
     db: AsyncSession = Depends(get_session),
     redis: Redis = Depends(get_redis),
 ) -> TokenPair:
-    """Ротация refresh-токена. Повторное предъявление уже использованного —
-    сигнал компрометации: гасим все сессии сотрудника и требуем новый вход."""
+    """Обновление пары токенов.
+
+    Повтор того же запроса в пределах короткого окна (клиент не получил ответ,
+    потому что моргнула сеть) возвращает ту же пару — это норма мобильной сети,
+    а не атака. Предъявление давно использованного токена — уже компрометация:
+    гасим все сессии сотрудника и требуем нового входа.
+    """
     try:
         token_payload = auth_service.decode_token(payload.refresh_token, expected_type="refresh")
     except auth_service.TokenExpiredError as exc:
@@ -137,13 +142,38 @@ async def refresh(
         ) from exc
 
     assert token_payload.jti is not None  # decode_token гарантирует jti для refresh
-    consumed = await auth_service.consume_refresh_jti(
-        redis, token_payload.employee_id, token_payload.jti
+
+    employee = await db.get(Employee, token_payload.employee_id)
+    if employee is None or employee.deleted_at is not None or not employee.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Сотрудник неактивен"
+        )
+
+    outcome = await auth_service.rotate_refresh_token(
+        redis,
+        employee_id=employee.id,
+        venue_id=employee.venue_id,
+        role=employee.role,
+        jti=token_payload.jti,
     )
-    if not consumed:
-        # Токен уже был использован ранее (или подделан) — это либо гонка
-        # легитимного клиента с самим собой, либо украденный токен уже в деле.
-        # Безопаснее считать компрометацией и отозвать всё сотруднику разом.
+
+    if outcome.status == "replayed":
+        # Клиент не получил наш прошлый ответ (сеть моргнула) и повторил запрос.
+        # Отдаём ту же пару: это не атака, и выкидывать человека из смены не за что.
+        logger.info(
+            "Повтор обновления токена сотрудника %s в пределах окна — отдаю ту же пару",
+            employee.id,
+        )
+        assert outcome.tokens is not None
+        return TokenPair(
+            access_token=outcome.tokens.access_token,
+            refresh_token=outcome.tokens.refresh_token,
+            expires_in=outcome.tokens.expires_in,
+        )
+
+    if outcome.status == "reuse":
+        # Токен использован давно — окно повтора уже закрылось. Значит это не
+        # потерянный ответ, а чужая копия токена. Гасим все сессии сотрудника.
         await auth_service.bump_token_epoch(redis, token_payload.employee_id)
         logger.warning(
             "Повторное предъявление refresh-токена сотрудника %s — все сессии отозваны",
@@ -154,19 +184,11 @@ async def refresh(
             detail="Токен уже был использован, войдите заново",
         )
 
-    employee = await db.get(Employee, token_payload.employee_id)
-    if employee is None or employee.deleted_at is not None or not employee.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Сотрудник неактивен"
-        )
-
-    issued = await auth_service.issue_token_pair(
-        redis, employee_id=employee.id, venue_id=employee.venue_id, role=employee.role
-    )
+    assert outcome.tokens is not None  # status == "rotated"
     return TokenPair(
-        access_token=issued.access_token,
-        refresh_token=issued.refresh_token,
-        expires_in=issued.expires_in,
+        access_token=outcome.tokens.access_token,
+        refresh_token=outcome.tokens.refresh_token,
+        expires_in=outcome.tokens.expires_in,
     )
 
 

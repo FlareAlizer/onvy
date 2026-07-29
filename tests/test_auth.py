@@ -226,9 +226,41 @@ async def test_refresh_rotates_and_old_token_is_dead(client: AsyncClient, sessio
     assert new_refresh != old_refresh
 
 
-async def test_refresh_reuse_is_detected_and_revokes_session(
+async def test_повтор_обновления_сразу_отдаёт_ту_же_пару(
     client: AsyncClient, session_maker
 ) -> None:
+    """Телефон официанта потерял ответ и повторил запрос.
+
+    Это обычная мобильная сеть, а не атака: человек не должен вылететь из смены.
+    Повтор в пределах окна возвращает ровно ту же пару токенов.
+    """
+    venue_id = await _make_venue(session_maker)
+    employee_id = await _make_employee(session_maker, venue_id=venue_id, pin="4711")
+    old_refresh = (await _login(client, employee_id, "4711"))["refresh_token"]
+
+    first = await client.post("/api/auth/refresh", json={"refresh_token": old_refresh})
+    assert first.status_code == 200
+
+    replay = await client.post("/api/auth/refresh", json={"refresh_token": old_refresh})
+
+    assert replay.status_code == 200
+    assert replay.json()["refresh_token"] == first.json()["refresh_token"]
+
+    # Сессия жива: выданным токеном по-прежнему можно обновляться.
+    still_valid = await client.post(
+        "/api/auth/refresh", json={"refresh_token": first.json()["refresh_token"]}
+    )
+    assert still_valid.status_code == 200
+
+
+async def test_поздний_повтор_считается_кражей_и_гасит_сессии(
+    client: AsyncClient, session_maker, redis_client
+) -> None:
+    """Тот же токен, предъявленный после закрытия окна, — уже чужая копия.
+
+    Здесь мы гасим всё: и сам старый токен, и только что выданный новый,
+    потому что не знаем, у кого из двоих настоящий владелец.
+    """
     venue_id = await _make_venue(session_maker)
     employee_id = await _make_employee(session_maker, venue_id=venue_id, pin="4711")
     old_refresh = (await _login(client, employee_id, "4711"))["refresh_token"]
@@ -237,11 +269,14 @@ async def test_refresh_reuse_is_detected_and_revokes_session(
     assert first.status_code == 200
     new_refresh = first.json()["refresh_token"]
 
-    # Повторное предъявление уже использованного refresh-токена (украден/гонка).
+    # Окно повтора закрылось — эмулируем это, убрав запись о выданной паре.
+    old_jti = auth_service.decode_token(old_refresh, expected_type="refresh").jti
+    await redis_client.delete(f"auth:refresh_replay:{employee_id}:{old_jti}")
+
     replay = await client.post("/api/auth/refresh", json={"refresh_token": old_refresh})
     assert replay.status_code == 401
 
-    # Реюз должен был отозвать ВСЮ сессию, включая только что выданный новый refresh.
+    # Отозвана вся сессия, включая только что выданный новый refresh.
     after_revocation = await client.post("/api/auth/refresh", json={"refresh_token": new_refresh})
     assert after_revocation.status_code == 401
 

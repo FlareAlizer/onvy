@@ -53,26 +53,46 @@ async function readError(resp: Response): Promise<string> {
   }
 }
 
+// Одно обновление на всё приложение одновременно. Без этого два запроса,
+// одновременно получившие 401, дёрнули бы обновление вдвоём: второй пришёл бы
+// с уже использованным токеном, и сервер имел бы полное право счесть это
+// кражей и выкинуть официанта из смены. Держим одно обещание на всех.
+let refreshInFlight: Promise<boolean> | null = null;
+
 /** Обновить пару токенов. Возвращает false, если сессия окончательно мертва. */
-async function refreshSession(): Promise<boolean> {
-  const session = getSession();
-  if (!session) return false;
-  const resp = await fetch('/api/auth/refresh', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ refresh_token: session.refreshToken }),
-  });
-  if (!resp.ok) {
-    clearSession();
-    return false;
-  }
-  const tokens = await resp.json();
-  saveSession({
-    ...session,
-    accessToken: tokens.access_token,
-    refreshToken: tokens.refresh_token,
-  });
-  return true;
+function refreshSession(): Promise<boolean> {
+  if (refreshInFlight) return refreshInFlight;
+
+  refreshInFlight = (async () => {
+    const session = getSession();
+    if (!session) return false;
+    try {
+      const resp = await fetch('/api/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: session.refreshToken }),
+      });
+      if (!resp.ok) {
+        clearSession();
+        return false;
+      }
+      const tokens = await resp.json();
+      saveSession({
+        ...session,
+        accessToken: tokens.access_token,
+        refreshToken: tokens.refresh_token,
+      });
+      return true;
+    } catch {
+      // Сеть отвалилась во время обновления. Сессию не стираем: телефон в зале
+      // теряет вайфай постоянно, и терять из-за этого вход было бы жестоко.
+      return false;
+    } finally {
+      refreshInFlight = null;
+    }
+  })();
+
+  return refreshInFlight;
 }
 
 type RequestOptions = RequestInit & { retryOnAuthFailure?: boolean };

@@ -18,6 +18,7 @@ Refresh-токены дополнительно ротируются: у каж�
 
 from __future__ import annotations
 
+import json
 import secrets
 import time
 import uuid
@@ -247,6 +248,72 @@ async def consume_refresh_jti(redis: Redis, employee_id: int, jti: str) -> bool:
     key = _REFRESH_JTI_KEY.format(employee_id=employee_id, jti=jti)
     deleted = await redis.delete(key)
     return deleted == 1
+
+
+# --- Повтор обновления токена ----------------------------------------------------
+
+# Сколько секунд после успешного обновления мы отвечаем на повтор той же парой
+# вместо того, чтобы считать это компрометацией.
+#
+# Зачем это нужно. Телефон официанта в зале теряет сеть постоянно. Обычный
+# сценарий: клиент отправил refresh, сервер обновил токены, ответ не доехал.
+# Клиент повторяет запрос со старым токеном — и без этого окна получает
+# «все сессии отозваны» и вылетает на экран входа посреди смены.
+# Это не атака, это мобильная сеть.
+#
+# Безопасность при этом остаётся: украденный токен, предъявленный позже окна,
+# по-прежнему гасит все сессии сотрудника и требует нового входа.
+REFRESH_REPLAY_GRACE_SECONDS = 30
+
+_REFRESH_REPLAY_KEY = "auth:refresh_replay:{employee_id}:{jti}"
+
+
+@dataclass(frozen=True)
+class RefreshOutcome:
+    """Чем закончилась попытка обновить пару токенов."""
+
+    # rotated — обычное обновление; replayed — повтор в пределах окна;
+    # reuse — предъявлен давно использованный токен, это компрометация.
+    status: Literal["rotated", "replayed", "reuse"]
+    tokens: IssuedTokens | None = None
+
+
+async def rotate_refresh_token(
+    redis: Redis, *, employee_id: int, venue_id: int, role: str, jti: str
+) -> RefreshOutcome:
+    """Обновить пару токенов, переживая повтор запроса из-за потери сети."""
+    if await consume_refresh_jti(redis, employee_id, jti):
+        tokens = await issue_token_pair(
+            redis, employee_id=employee_id, venue_id=venue_id, role=role
+        )
+        # Запоминаем выданную пару на короткое время: если клиент не получил
+        # ответ и повторит запрос, он получит ровно то же самое.
+        await redis.set(
+            _REFRESH_REPLAY_KEY.format(employee_id=employee_id, jti=jti),
+            json.dumps(
+                {
+                    "access_token": tokens.access_token,
+                    "refresh_token": tokens.refresh_token,
+                    "expires_in": tokens.expires_in,
+                }
+            ),
+            ex=REFRESH_REPLAY_GRACE_SECONDS,
+        )
+        return RefreshOutcome(status="rotated", tokens=tokens)
+
+    stored = await redis.get(_REFRESH_REPLAY_KEY.format(employee_id=employee_id, jti=jti))
+    if stored:
+        data = json.loads(stored)
+        return RefreshOutcome(
+            status="replayed",
+            tokens=IssuedTokens(
+                access_token=data["access_token"],
+                refresh_token=data["refresh_token"],
+                expires_in=data["expires_in"],
+            ),
+        )
+
+    return RefreshOutcome(status="reuse")
 
 
 @dataclass(frozen=True)
