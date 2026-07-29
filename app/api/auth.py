@@ -49,9 +49,15 @@ _login_rate_limited = rate_limit_dependency(_LOGIN_RATE_LIMIT, key_prefix="login
 
 
 def _invalid_credentials() -> HTTPException:
+    """Один и тот же отказ для обоих способов входа.
+
+    Формулировка намеренно не уточняет, что именно не сошлось: разные тексты
+    для «нет такого» и «пароль не тот» превращают форму входа в способ узнать,
+    кто здесь работает.
+    """
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Неверный сотрудник или PIN-код",
+        detail="Данные для входа не подходят",
     )
 
 

@@ -168,7 +168,7 @@ async def test_login_wrong_pin_is_generic(client: AsyncClient, session_maker) ->
     resp = await client.post("/api/auth/login", json={"employee_id": employee_id, "pin": "0000"})
 
     assert resp.status_code == 401
-    assert resp.json()["detail"] == "Неверный сотрудник или PIN-код"
+    assert resp.json()["detail"] == "Данные для входа не подходят"
 
 
 async def test_login_unknown_employee_matches_wrong_pin_response(client: AsyncClient) -> None:
@@ -177,7 +177,7 @@ async def test_login_unknown_employee_matches_wrong_pin_response(client: AsyncCl
     resp = await client.post("/api/auth/login", json={"employee_id": 999999, "pin": "0000"})
 
     assert resp.status_code == 401
-    assert resp.json()["detail"] == "Неверный сотрудник или PIN-код"
+    assert resp.json()["detail"] == "Данные для входа не подходят"
 
 
 async def test_login_inactive_employee_rejected(client: AsyncClient, session_maker) -> None:
