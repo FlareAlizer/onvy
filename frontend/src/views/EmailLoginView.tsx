@@ -9,9 +9,11 @@ import { ApiError, loginWithEmail } from '../lib/api';
 type Props = {
   /** Переключиться на быстрый вход по PIN. */
   onUsePin: () => void;
+  /** Открыть регистрацию заведения. */
+  onSignup: () => void;
 };
 
-export default function EmailLoginView({ onUsePin }: Props) {
+export default function EmailLoginView({ onUsePin, onSignup }: Props) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -105,6 +107,15 @@ export default function EmailLoginView({ onUsePin }: Props) {
           <Smartphone size={20} />
           Быстрый вход по PIN
         </button>
+
+        {/* Регистрация внизу и без нажима: заведение подключают один раз,
+            а входят каждую смену — вход и должен быть главным на экране. */}
+        <p className="mt-8 text-center text-sm text-stone-500">
+          Нет доступа?{' '}
+          <button onClick={onSignup} className="font-medium text-emerald-400 underline">
+            Подключить заведение
+          </button>
+        </p>
       </div>
     </div>
   );

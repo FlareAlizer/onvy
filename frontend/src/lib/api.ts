@@ -196,6 +196,22 @@ export async function loginWithEmail(email: string, password: string): Promise<S
   return completeLogin(tokens);
 }
 
+export type SignupRequest = {
+  venue_name: string;
+  manager_name: string;
+  email: string;
+  password: string;
+};
+
+/** Зарегистрировать заведение. Токены приходят сразу — второй раз пароль не спрашиваем. */
+export async function signupVenue(payload: SignupRequest): Promise<Session> {
+  const result = await apiPublic<TokenPairResponse & { venue_id: number; venue_name: string }>(
+    '/signup/venue',
+    { method: 'POST', body: JSON.stringify(payload) },
+  );
+  return completeLogin(result);
+}
+
 /** Быстрый вход по PIN — для смены в зале, где почту вводить неудобно. */
 export async function loginWithPin(employeeId: number, pin: string): Promise<Session> {
   const tokens = await apiPublic<TokenPairResponse>('/auth/login', {

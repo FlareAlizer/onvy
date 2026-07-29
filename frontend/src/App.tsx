@@ -1,4 +1,4 @@
-// Что показать вошедшему.
+// Что показать: экран входа, регистрацию или кабинет.
 //
 // Управляющий получает кабинет руководителя, остальные — кабинет сотрудника.
 // Экран официанта с кнопкой рации остаётся первой вкладкой кабинета сотрудника:
@@ -9,13 +9,23 @@ import { getSession } from './lib/api';
 import ConsoleApp from './console/ConsoleApp';
 import EmailLoginView from './views/EmailLoginView';
 import LoginView from './views/LoginView';
+import SignupView from './views/SignupView';
+
+type Screen = 'email' | 'pin' | 'signup';
 
 export default function App() {
   const session = getSession();
-  const [usePin, setUsePin] = useState(false);
+  const [screen, setScreen] = useState<Screen>('email');
 
   if (!session) {
-    return usePin ? <LoginView /> : <EmailLoginView onUsePin={() => setUsePin(true)} />;
+    if (screen === 'pin') return <LoginView />;
+    if (screen === 'signup') return <SignupView onBackToLogin={() => setScreen('email')} />;
+    return (
+      <EmailLoginView
+        onUsePin={() => setScreen('pin')}
+        onSignup={() => setScreen('signup')}
+      />
+    );
   }
 
   return <ConsoleApp role={session.role === 'manager' ? 'rop' : 'employee'} />;
