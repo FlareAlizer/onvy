@@ -6,17 +6,21 @@
 // что делать при выходе — App.tsx ничего в него не прокидывает.
 
 import { useEffect, useState } from 'react';
-import { Ban, BarChart3, FileUp, LogOut, Radio, Users, WifiOff } from 'lucide-react';
+import { Ban, BarChart3, FileUp, LogOut, Mic, Radio, Users, WifiOff } from 'lucide-react';
 import { clearSession, getSession, openCommsSocket, type IncomingMessage } from '../lib/api';
 import StopListTab from '../components/manager/StopListTab';
 import ShiftTab, { type FeedEntry } from '../components/manager/ShiftTab';
 import MenuImportTab from '../components/manager/MenuImportTab';
 import MetricsTab from '../components/manager/MetricsTab';
+import TalkTab from '../components/manager/TalkTab';
 
-type TabKey = 'stop' | 'shift' | 'menu' | 'metrics';
+type TabKey = 'stop' | 'talk' | 'shift' | 'menu' | 'metrics';
 
 const TABS: { key: TabKey; label: string; icon: typeof Ban }[] = [
   { key: 'stop', label: 'Стоп-лист', icon: Ban },
+  // Управляющий не только слышит смену, но и говорит с ней: по спеке §4 он
+  // координирует зал, а без кнопки мог только слушать.
+  { key: 'talk', label: 'Рация', icon: Mic },
   { key: 'shift', label: 'Смена', icon: Users },
   { key: 'menu', label: 'Меню', icon: FileUp },
   { key: 'metrics', label: 'Метрики', icon: BarChart3 },
@@ -99,12 +103,13 @@ export default function ManagerView() {
 
       <main className="min-h-0 flex-1 overflow-hidden">
         {tab === 'stop' && <StopListTab onGoToMenu={() => setTab('menu')} />}
+        {tab === 'talk' && <TalkTab />}
         {tab === 'shift' && <ShiftTab venueId={session.venueId} feed={feed} wsStatus={wsStatus} />}
         {tab === 'menu' && <MenuImportTab />}
         {tab === 'metrics' && <MetricsTab />}
       </main>
 
-      <nav className="grid shrink-0 grid-cols-4 border-t border-stone-800 bg-stone-950 pb-[env(safe-area-inset-bottom)]">
+      <nav className="grid shrink-0 grid-cols-5 border-t border-stone-800 bg-stone-950 pb-[env(safe-area-inset-bottom)]">
         {TABS.map(({ key, label, icon: Icon }) => (
           <button
             key={key}

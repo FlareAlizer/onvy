@@ -31,6 +31,7 @@ from app.schemas.staff import (
     ShiftSummaryOut,
     StaffAccessOut,
     StaffCreateRequest,
+    StaffUpdateRequest,
 )
 from app.services import auth as auth_service
 from app.services import stats
@@ -407,4 +408,113 @@ async def reset_access(
         pin=pin,
         email=employee.email,
         password=password,
+    )
+
+
+@router.patch("/staff/{employee_id}", response_model=EmployeeOut)
+async def update_staff(
+    venue_id: int,
+    employee_id: int,
+    payload: StaffUpdateRequest,
+    current: CurrentEmployee = Depends(require_manager),
+    db: AsyncSession = Depends(get_session),
+) -> EmployeeOut:
+    """Поправить сотрудника: имя, кличку, роль, язык, активность.
+
+    Смена роли меняет и группы связи — иначе человек, переведённый из зала на
+    кухню, продолжал бы слышать зал и не слышать кухню.
+    """
+    require_own_venue(current, venue_id)
+
+    employee = await db.get(Employee, employee_id)
+    if (
+        employee is None
+        or employee.venue_id != venue_id
+        or employee.deleted_at is not None
+    ):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Сотрудник не найден")
+
+    if payload.role is not None:
+        if payload.role not in EMPLOYEE_ROLES:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Неизвестная роль. Допустимо: {', '.join(EMPLOYEE_ROLES)}",
+            )
+        if payload.role != employee.role:
+            # Пересобираем группы под новую роль: старые связки убираем, иначе
+            # человек остался бы слышать прежний цех.
+            старые = (
+                await db.execute(
+                    select(EmployeeCommGroup).where(
+                        EmployeeCommGroup.employee_id == employee.id
+                    )
+                )
+            ).scalars().all()
+            for связка in старые:
+                await db.delete(связка)
+
+            группы = (
+                await db.execute(
+                    select(CommGroup.id, CommGroup.name).where(
+                        CommGroup.venue_id == venue_id, CommGroup.deleted_at.is_(None)
+                    )
+                )
+            ).all()
+            по_имени = {имя: gid for gid, имя in группы}
+            for group in ROLE_GROUPS[payload.role]:
+                gid = по_имени.get(group.value)
+                if gid is not None:
+                    db.add(
+                        EmployeeCommGroup(employee_id=employee.id, comm_group_id=gid)
+                    )
+        employee.role = payload.role
+
+    if payload.language is not None:
+        if payload.language not in LANGUAGES:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Неизвестный язык. Допустимо: {', '.join(LANGUAGES)}",
+            )
+        employee.language = payload.language
+
+    if payload.nickname is not None:
+        новая = payload.nickname.strip() or None
+        if новая:
+            чужие = (
+                await db.execute(
+                    select(Employee.nickname).where(
+                        Employee.venue_id == venue_id,
+                        Employee.id != employee.id,
+                        Employee.deleted_at.is_(None),
+                        Employee.nickname.isnot(None),
+                    )
+                )
+            ).scalars().all()
+            проблемы = check_nicknames(
+                [*чужие, новая], menu_names=await _venue_menu_words(db, venue_id)
+            )
+            своя = [p for p in проблемы if p.nickname == новая]
+            if своя:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(своя[0])
+                )
+        employee.nickname = новая
+
+    if payload.name is not None:
+        employee.name = payload.name.strip()
+
+    if payload.is_active is not None:
+        employee.is_active = payload.is_active
+
+    await db.commit()
+    await db.refresh(employee)
+
+    return EmployeeOut(
+        id=employee.id,
+        name=employee.name,
+        nickname=employee.nickname,
+        role=employee.role,
+        language=employee.language,
+        is_active=employee.is_active,
+        hired_at=employee.hired_at,
     )

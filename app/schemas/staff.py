@@ -40,6 +40,21 @@ class StaffCreateRequest(BaseModel):
     email: EmailStr | None = None
 
 
+class StaffUpdateRequest(BaseModel):
+    """Правка сотрудника. Поле не передано — не меняем.
+
+    Язык здесь — не косметика: на нём человек слышит перевод реплик коллег и
+    ответы ассистента. Поставили не тот — повар получает подсказки на языке,
+    которого не знает.
+    """
+
+    name: str | None = Field(default=None, min_length=2, max_length=120)
+    nickname: str | None = Field(default=None, max_length=60)
+    role: str | None = None
+    language: str | None = None
+    is_active: bool | None = None
+
+
 class StaffAccessOut(BaseModel):
     """Выданные доступы. Показываются ОДИН раз — в базе только argon2id-хеши.
 

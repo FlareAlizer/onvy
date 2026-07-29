@@ -54,6 +54,22 @@ export default function StaffTab() {
     void загрузить();
   }, [загрузить]);
 
+  const сменитьЯзык = async (member: StaffMember, language: string) => {
+    // Оптимистично: список должен отзываться сразу, а не после round-trip.
+    setStaff((current) =>
+      current?.map((m) => (m.id === member.id ? { ...m, language } : m)) ?? null,
+    );
+    try {
+      await api(`/venues/${venueId}/staff/${member.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ language }),
+      });
+    } catch {
+      setError('Не удалось сменить язык');
+      void загрузить();
+    }
+  };
+
   const перевыдать = async (member: StaffMember) => {
     try {
       const результат = await api<Access>(
@@ -106,21 +122,39 @@ export default function StaffTab() {
             key={member.id}
             className="flex items-center justify-between rounded-2xl border border-stone-200 bg-white px-4 py-3"
           >
-            <div className="min-w-0">
+            <div className="min-w-0 flex-1">
               <p className="truncate font-medium">{member.name}</p>
               <p className="text-sm text-stone-500">
-                {roleLabel(member.role)} · {languageLabel(member.language)}
+                {roleLabel(member.role)}
                 {member.nickname && ` · «${member.nickname}»`}
               </p>
             </div>
-            <button
-              onClick={() => void перевыдать(member)}
-              title="Перевыдать PIN и пароль"
-              className="flex shrink-0 items-center gap-1.5 rounded-xl border border-stone-300 px-3 py-2 text-sm text-stone-600"
-            >
-              <RotateCcw size={16} />
-              Доступ
-            </button>
+
+            <div className="flex shrink-0 items-center gap-2">
+              {/* Язык правят прямо здесь: на нём человек слышит перевод реплик
+                  и ответы ассистента. Поставили не тот — повар получает
+                  подсказки на языке, которого не знает. */}
+              <select
+                value={member.language}
+                onChange={(e) => void сменитьЯзык(member, e.target.value)}
+                title="Язык, на котором человек слышит перевод"
+                className="rounded-xl border border-stone-300 bg-white px-2 py-2 text-sm"
+              >
+                {ЯЗЫКИ.map((l) => (
+                  <option key={l} value={l}>
+                    {languageLabel(l)}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={() => void перевыдать(member)}
+                title="Перевыдать PIN и пароль"
+                className="flex items-center gap-1.5 rounded-xl border border-stone-300 px-3 py-2 text-sm text-stone-600"
+              >
+                <RotateCcw size={16} />
+                Доступ
+              </button>
+            </div>
           </li>
         ))}
       </ul>
