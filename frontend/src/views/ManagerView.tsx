@@ -6,7 +6,17 @@
 // что делать при выходе — App.tsx ничего в него не прокидывает.
 
 import { useEffect, useState } from 'react';
-import { Ban, BarChart3, FileUp, LogOut, Mic, Radio, Users, WifiOff } from 'lucide-react';
+import {
+  Ban,
+  BarChart3,
+  ChevronLeft,
+  FileUp,
+  LogOut,
+  Mic,
+  Radio,
+  Users,
+  WifiOff,
+} from 'lucide-react';
 import { clearSession, getSession, openCommsSocket, type IncomingMessage } from '../lib/api';
 import StopListTab from '../components/manager/StopListTab';
 import ShiftTab, { type FeedEntry } from '../components/manager/ShiftTab';
@@ -26,7 +36,14 @@ const TABS: { key: TabKey; label: string; icon: typeof Ban }[] = [
   { key: 'metrics', label: 'Метрики', icon: BarChart3 },
 ];
 
-export default function ManagerView() {
+type Props = {
+  /** Вернуться в кабинет. Передаётся, когда экран открыт из консоли: он
+   *  полноэкранный (h-dvh) и живёт ВНЕ прокручиваемой страницы кабинета —
+   *  внутри неё вложенная высота вьюпорта ломала вёрстку на телефоне. */
+  onExit?: () => void;
+};
+
+export default function ManagerView({ onExit }: Props = {}) {
   const session = getSession();
   const [tab, setTab] = useState<TabKey>('stop');
   const [feed, setFeed] = useState<FeedEntry[]>([]);
@@ -92,11 +109,11 @@ export default function ManagerView() {
         <div className="flex items-center gap-3">
           <ConnBadge status={wsStatus} />
           <button
-            onClick={logout}
-            aria-label="Выйти"
+            onClick={onExit ?? logout}
+            aria-label={onExit ? 'В кабинет' : 'Выйти'}
             className="rounded-xl p-2.5 text-stone-400 transition-colors duration-150 ease-out active:text-stone-100"
           >
-            <LogOut size={22} />
+            {onExit ? <ChevronLeft size={22} /> : <LogOut size={22} />}
           </button>
         </div>
       </header>

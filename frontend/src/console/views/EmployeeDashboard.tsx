@@ -39,9 +39,12 @@ export default function EmployeeDashboard() {
     },
   ];
 
+  // Та же причина, что в кабинете руководителя: экран рации занимает весь
+  // вьюпорт и не может находиться внутри страницы со скроллом.
+  if (tab === 'shift') return <WaiterView onExit={() => setTab('stats')} />;
+
   return (
     <Shell nav={nav} active={tab} onNavigate={(id) => setTab(id as Tab)}>
-      {tab === 'shift' && <WaiterView />}
       {tab === 'stats' && <MyStats onOpenTraining={() => setTab('training')} />}
       {tab === 'dialogs' && <MyDialogs />}
       {tab === 'training' && <Training />}

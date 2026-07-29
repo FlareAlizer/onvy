@@ -80,9 +80,13 @@ export default function ROPDashboard() {
     ];
   }, [focus, data.points.length, data.employees.length, pendingTests, L.interactionGenitivePlural]);
 
+  // Экран рации полноэкранный (h-dvh) и должен жить ВНЕ прокручиваемой
+  // страницы кабинета: вложенная высота вьюпорта внутри контейнера с шапкой и
+  // отступами ломала вёрстку на телефоне — половина экрана оставалась пустой.
+  if (tab === 'live') return <ManagerView onExit={() => setTab('overview')} />;
+
   return (
     <Shell nav={nav} active={tab} onNavigate={(id) => setTab(id as Tab)}>
-      {tab === 'live' && <ManagerView />}
       {tab === 'roster' && <StaffTab />}
       {tab === 'overview' && <Overview onGoTo={(t) => setTab(t as Tab)} />}
       {tab === 'analytics' && <Analytics />}

@@ -37,7 +37,12 @@ const DEGRADED_TEXT: Record<string, string> = {
   tts: 'Голос не пришёл — читайте текст',
 };
 
-export default function WaiterView() {
+type Props = {
+  /** Вернуться в кабинет — когда экран открыт из консоли сотрудника. */
+  onExit?: () => void;
+};
+
+export default function WaiterView({ onExit }: Props = {}) {
   const session = getSession();
   const [phase, setPhase] = useState<Phase>('idle');
   const [online, setOnline] = useState(false);
@@ -197,13 +202,16 @@ export default function WaiterView() {
             {online ? 'На смене' : 'Нет связи'}
           </span>
           <button
-            onClick={() => {
-              clearSession();
-              location.reload();
-            }}
+            onClick={
+              onExit ??
+              (() => {
+                clearSession();
+                location.reload();
+              })
+            }
             className="rounded-lg px-3 py-1.5 text-sm text-stone-400"
           >
-            Выйти
+            {onExit ? 'В кабинет' : 'Выйти'}
           </button>
         </div>
       </header>
