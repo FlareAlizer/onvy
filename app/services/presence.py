@@ -134,6 +134,14 @@ class CommsBus:
         и пробует снова, иначе одна сетевая икота оставит смену без рации.
         """
         while True:
+            # Пока к этому процессу никто не подключён, слушать нечего: у pubsub
+            # нет ни одного канала, и попытка читать из него — ошибка, а не сбой
+            # брокера. Так бывает почти всегда сразу после старта, до первого
+            # вошедшего сотрудника.
+            if not self._pubsub.subscribed:
+                await asyncio.sleep(0.5)
+                continue
+
             try:
                 message = await self._pubsub.get_message(
                     ignore_subscribe_messages=True, timeout=1.0
