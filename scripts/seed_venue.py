@@ -52,7 +52,78 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Только показать план (что создастся/обновится/отклонится), не писать в БД",
     )
 
+    grant = subparsers.add_parser(
+        "grant-access",
+        help="Выдать существующему сотруднику почту и пароль для входа в кабинет",
+    )
+    grant.add_argument("--venue-id", required=True, type=int, help="id точки")
+    grant.add_argument("--name", required=True, help="Имя сотрудника, как заведено в точке")
+    grant.add_argument("--email", required=True, help="Почта для входа")
+
     return parser
+
+
+async def _run_grant_access(args: argparse.Namespace) -> None:
+    """Выдать доступ уже работающему человеку.
+
+    Отдельная команда, а не часть setup: setup намеренно пропускает
+    существующих сотрудников, чтобы не перевыдать молча PIN, который уже
+    роздан на смене. Выдача доступа — осознанное действие, и повторный запуск
+    сменит пароль, о чём команда честно предупреждает в выводе.
+    """
+    from sqlalchemy import select
+
+    from app.db.models.employee import Employee
+    from app.db.seed import generate_password
+    from app.services.auth import hash_password, normalize_email
+
+    email = normalize_email(args.email)
+
+    async with SessionLocal() as session:
+        employee = (
+            await session.execute(
+                select(Employee).where(
+                    Employee.venue_id == args.venue_id,
+                    Employee.name == args.name,
+                    Employee.deleted_at.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+
+        if employee is None:
+            print(f"В точке {args.venue_id} нет сотрудника «{args.name}».")
+            print("Проверьте имя — оно должно совпадать с тем, как человек заведён.")
+            raise SystemExit(1)
+
+        занято = (
+            await session.execute(
+                select(Employee).where(
+                    Employee.email == email,
+                    Employee.id != employee.id,
+                    Employee.deleted_at.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if занято is not None:
+            print(
+                f"Почта {email} уже занята другим сотрудником — "
+                "по ней входят, дубли недопустимы."
+            )
+            raise SystemExit(1)
+
+        было = employee.email
+        password = generate_password()
+        employee.email = email
+        employee.password_hash = hash_password(password)
+        await session.commit()
+
+    print(f"Доступ выдан: {employee.name}")
+    print(f"  почта:  {email}")
+    print(f"  пароль: {password}")
+    print()
+    if было:
+        print(f"Внимание: прежняя почта была {было}, пароль сменён — старый больше не работает.")
+    print("Пароль показан один раз, в базе только argon2id-хеш. Передайте лично.")
 
 
 async def _run_setup(args: argparse.Namespace) -> None:
@@ -97,6 +168,9 @@ async def _run_import_menu(args: argparse.Namespace) -> None:
 
 
 async def _dispatch(args: argparse.Namespace) -> None:
+    if args.command == "grant-access":
+        await _run_grant_access(args)
+        return
     if args.command == "setup":
         await _run_setup(args)
     elif args.command == "import-menu":
