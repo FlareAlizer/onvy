@@ -149,8 +149,23 @@ interface StoreValue {
 
 const StoreContext = createContext<StoreValue | null>(null);
 
+/**
+ * Пригодны ли сохранённые данные к показу.
+ *
+ * Внутри платформы консоль открывается сразу, минуя её собственную регистрацию,
+ * поэтому пустое пространство здесь означает не «пользователь только начал»,
+ * а мусор в localStorage от прежних заходов — и все разделы выглядят пустыми,
+ * хотя ничего не сломано. В таком случае честнее показать демо-данные.
+ */
+function usable(data: AppData | null): data is AppData {
+  return Boolean(data && Array.isArray(data.employees) && data.employees.length > 0);
+}
+
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const [data, setData] = useState<AppData>(() => load(DATA_KEY, makeSpace(DEFAULT_SPACE)));
+  const [data, setData] = useState<AppData>(() => {
+    const saved = load<AppData | null>(DATA_KEY, null);
+    return usable(saved) ? saved : makeSpace(DEFAULT_SPACE);
+  });
   const [session, setSession] = useState<Account | null>(() => load<Account | null>(SESSION_KEY, null));
 
   useEffect(() => save(DATA_KEY, data), [data]);
