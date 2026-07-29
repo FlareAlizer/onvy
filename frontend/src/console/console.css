@@ -1,0 +1,153 @@
+@import 'tailwindcss';
+
+/* Инструментальные шрифты консоли — грузим отдельно, чтобы не зависеть от
+   шрифтов основного приложения (Plus Jakarta Sans). JetBrains Mono для цифр
+   уже подключён в frontend/src/index.css, здесь не дублируем. */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+@theme {
+  /* Фирменный синий Onvy на светлом полотне. */
+  --color-brand-50: #eff9ff;
+  --color-brand-100: #dceffd;
+  --color-brand-200: #b9e0fb;
+  --color-brand-300: #7cc9f8;
+  --color-brand-400: #36adf1;
+  --color-brand-500: #0c93e0;
+  --color-brand-600: #0284c7;
+  --color-brand-700: #035d98;
+  --color-brand-800: #075985;
+  --color-brand-900: #0c4a6e;
+
+  --color-ink: #0b1220;
+  --color-plane: #f6f8fb;
+  /* Вторичный текст: на ступень темнее slate-500, который даёт 4.48 на плашке
+     страницы — ниже нормы AA. Этот проходит и на белом, и на плашке. */
+  --color-muted: oklch(0.52 0.043 257.4);
+  --color-line: #e6eaf0;
+
+  /* Серии графиков — проверены на различимость при дальтонизме. */
+  --color-series-1: #0284c7;
+  --color-series-2: #eb6834;
+  --color-series-3: #1baf7a;
+  --color-series-4: #eda100;
+  --color-series-5: #7c5cd6;
+
+  /* Статусы — зарезервированы, никогда не используются как серия. */
+  --color-good: #0ca30c;
+  --color-warn: #f59e0b;
+  --color-bad: #d03b3b;
+}
+
+/*
+ * Всё ниже намеренно скопировано в CSS-модуль консоли и здесь же изолировано
+ * под .onvy-console — платформа монтирует консоль внутри своих собственных
+ * экранов (LoginView/WaiterView/ManagerView используют общий frontend/src/index.css
+ * с другими токенами: Plus Jakarta Sans, другие --color-brand-*). Без скоупинга
+ * правила на body/h1..h4/:focus-visible/::selection и .btn-primary столкнулись
+ * бы с чужими глобальными стилями в одном документе.
+ */
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  .onvy-console {
+    @apply bg-plane text-ink antialiased;
+    min-height: 100vh;
+    font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+  /* Заголовки — тот же шрифт, отличаются только весом и кеглем. */
+  .onvy-console h1,
+  .onvy-console h2,
+  .onvy-console h3,
+  .onvy-console h4 {
+    @apply font-semibold;
+    letter-spacing: -0.011em;
+  }
+  /* Цифры выравниваются по колонкам. */
+  .onvy-console .num,
+  .onvy-console .figure {
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+  }
+  .onvy-console :focus-visible {
+    @apply outline-2 outline-offset-2 outline-brand-600;
+  }
+  .onvy-console ::selection {
+    @apply bg-brand-100 text-brand-900;
+  }
+}
+
+/* Базовые примитивы объявлены как утилиты — только так их можно @apply в v4. */
+/* min-w-0: блок живёт в grid/flex, где элемент по умолчанию не сжимается
+   ниже min-content и растягивает страницу вбок. */
+@utility panel {
+  @apply min-w-0 rounded-[10px] bg-white shadow-[0_1px_2px_rgba(15,23,42,0.06)];
+}
+
+@utility card {
+  @apply panel;
+}
+
+@utility label {
+  @apply text-[12px] font-medium text-muted;
+}
+
+@utility field {
+  @apply w-full rounded-[7px] border border-slate-300 bg-white px-3 py-2 text-[14px] text-ink
+    transition placeholder:text-slate-400
+    focus:border-brand-600 focus:ring-2 focus:ring-brand-600/15 focus:outline-none;
+}
+
+@utility btn {
+  @apply inline-flex items-center justify-center gap-2 rounded-[7px] px-3.5 py-2 text-[14px] font-medium
+    transition select-none disabled:pointer-events-none disabled:opacity-40;
+}
+
+/* Названа console-btn-primary, а не btn-primary: платформа уже определяет
+   .btn-primary в frontend/src/index.css с другими стилями, и @utility Tailwind 4
+   не умеет скоуп по родителю — совпадение имени тихо перебило бы один из двух. */
+@utility console-btn-primary {
+  @apply btn bg-brand-600 text-white hover:bg-brand-700 active:bg-brand-800;
+}
+
+@utility btn-ghost {
+  @apply btn border border-slate-300 bg-white text-slate-700 hover:bg-slate-50;
+}
+
+@utility btn-quiet {
+  @apply btn text-slate-600 hover:bg-slate-100;
+}
+
+@utility scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+
+/* Индикатор активной записи на плашке бейджа. */
+@keyframes onvy-bar {
+  0%,
+  100% {
+    transform: scaleY(0.28);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+.bar-live {
+  animation: onvy-bar 1.1s ease-in-out infinite;
+  transform-origin: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .onvy-console *,
+  .onvy-console *::before,
+  .onvy-console *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+  .bar-live {
+    transform: scaleY(0.62);
+  }
+}
