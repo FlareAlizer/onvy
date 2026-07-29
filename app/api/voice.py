@@ -8,7 +8,7 @@
 import base64
 import logging
 
-from fastapi import APIRouter, Depends, Form, UploadFile
+from fastapi import APIRouter, Depends, Form, Request, UploadFile
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +23,7 @@ from app.services import dispatch
 from app.services.assistant_flow import AssistantOutcome, handle_voice_query
 from app.services.comms_flow import deliver
 from app.services.menu import active_stop_list, load_menu
+from app.services.rate_limit import RateLimitRule, rate_limit_dependency
 from app.services.runtime import get_bus, get_presence
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,27 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["voice"])
 
 
-@router.post("/voice/push-to-talk", response_model=VoiceResult)
+def _employee_key(request: Request) -> str:
+    """Лимит считаем на сотрудника, а не на IP: в чайхане все телефоны сидят
+    за одним вайфаем, и лимит по IP наказал бы всю смену за одного."""
+    auth = request.headers.get("Authorization", "")
+    return auth[-32:] if auth else (request.client.host if request.client else "unknown")
+
+
+# Каждое нажатие кнопки — это платное распознавание, ответ модели и синтез.
+# Заевшая кнопка в кармане или сотрудник, забавляющийся с ассистентом, без
+# лимита выжгут квоту облака за смену. 30 нажатий в минуту — заведомо больше,
+# чем успевает человек, и заведомо меньше, чем может залипшая кнопка.
+_voice_rate_limit = rate_limit_dependency(
+    RateLimitRule(limit=30, window_seconds=60), "voice", key_func=_employee_key
+)
+
+
+@router.post(
+    "/voice/push-to-talk",
+    response_model=VoiceResult,
+    dependencies=[Depends(_voice_rate_limit)],
+)
 async def push_to_talk(
     audio: UploadFile,
     always_on: bool = Form(
