@@ -17,7 +17,7 @@ import {
   Users,
   WifiOff,
 } from 'lucide-react';
-import { clearSession, getSession, openCommsSocket, type IncomingMessage } from '../lib/api';
+import { getSession, logoutSession, openCommsSocket, type IncomingMessage } from '../lib/api';
 import StopListTab from '../components/manager/StopListTab';
 import ShiftTab, { type FeedEntry } from '../components/manager/ShiftTab';
 import MenuImportTab from '../components/manager/MenuImportTab';
@@ -92,10 +92,7 @@ export default function ManagerView({ onExit }: Props = {}) {
     };
   }, []);
 
-  const logout = () => {
-    clearSession();
-    location.reload();
-  };
+  const logout = () => void logoutSession();
 
   if (!session) return null; // App.tsx рендерит этот экран только при наличии сессии
 

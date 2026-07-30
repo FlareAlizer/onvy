@@ -446,3 +446,83 @@ async def test_ws_ticket_unknown_ticket_returns_none(redis_client: Redis) -> Non
 async def test_ws_ticket_requires_authentication(client: AsyncClient) -> None:
     resp = await client.post("/api/auth/ws-ticket")
     assert resp.status_code == 401
+
+
+# --- Выход из аккаунта ---------------------------------------------------------
+#
+# Раньше выхода не было вовсе: клиент стирал память браузера, а refresh-токен
+# оставался рабочим ещё тридцать суток. На телефоне, который переходит следующей
+# смене, это не выход, а его видимость.
+
+
+async def test_logout_kills_refresh_token(client: AsyncClient, session_maker) -> None:
+    venue_id = await _make_venue(session_maker)
+    employee_id = await _make_employee(session_maker, venue_id=venue_id, pin="4711")
+    refresh_token = (await _login(client, employee_id, "4711"))["refresh_token"]
+
+    out = await client.post("/api/auth/logout", json={"refresh_token": refresh_token})
+    assert out.status_code == 204
+
+    # Тот же токен после выхода уже не обновляет сессию.
+    after = await client.post("/api/auth/refresh", json={"refresh_token": refresh_token})
+    assert after.status_code == 401
+
+
+async def test_logout_does_not_touch_other_devices(client: AsyncClient, session_maker) -> None:
+    """Управляющий сидит и в зале с телефона, и в кабинете с компьютера.
+
+    Выход на одном не должен выбрасывать его со второго — гасим предъявленный
+    токен, а не все сессии сотрудника.
+    """
+    venue_id = await _make_venue(session_maker)
+    employee_id = await _make_employee(session_maker, venue_id=venue_id, pin="4711")
+    телефон = (await _login(client, employee_id, "4711"))["refresh_token"]
+    компьютер = (await _login(client, employee_id, "4711"))["refresh_token"]
+
+    assert (
+        await client.post("/api/auth/logout", json={"refresh_token": телефон})
+    ).status_code == 204
+
+    остался = await client.post("/api/auth/refresh", json={"refresh_token": компьютер})
+    assert остался.status_code == 200
+
+
+async def test_logout_is_idempotent(client: AsyncClient, session_maker) -> None:
+    """Повторный выход не имеет права упасть: иначе человек остаётся в аккаунте
+    с сообщением об ошибке и без способа выйти."""
+    venue_id = await _make_venue(session_maker)
+    employee_id = await _make_employee(session_maker, venue_id=venue_id, pin="4711")
+    refresh_token = (await _login(client, employee_id, "4711"))["refresh_token"]
+
+    first = await client.post("/api/auth/logout", json={"refresh_token": refresh_token})
+    second = await client.post("/api/auth/logout", json={"refresh_token": refresh_token})
+
+    assert first.status_code == 204
+    assert second.status_code == 204
+
+
+async def test_logout_survives_garbage_token(client: AsyncClient) -> None:
+    """Токен подделан или испорчен — выйти всё равно можно."""
+    resp = await client.post("/api/auth/logout", json={"refresh_token": "не-токен-вовсе"})
+
+    assert resp.status_code == 204
+
+
+async def test_logout_survives_expired_token(client: AsyncClient, session_maker) -> None:
+    """Телефон пролежал в шкафчике месяц — выход не должен требовать живого токена."""
+    venue_id = await _make_venue(session_maker)
+    employee_id = await _make_employee(session_maker, venue_id=venue_id, pin="4711")
+    import jwt as pyjwt
+
+    живой, _ = auth_service.create_refresh_token(
+        employee_id=employee_id, venue_id=venue_id, role="waiter", epoch=0
+    )
+    claims = pyjwt.decode(живой, settings.secret_key, algorithms=[auth_service.JWT_ALGORITHM])
+    claims["exp"] = claims["iat"] - 10
+    просроченный = pyjwt.encode(
+        claims, settings.secret_key, algorithm=auth_service.JWT_ALGORITHM
+    )
+
+    resp = await client.post("/api/auth/logout", json={"refresh_token": просроченный})
+
+    assert resp.status_code == 204

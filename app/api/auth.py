@@ -284,6 +284,33 @@ async def refresh(
     )
 
 
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(payload: RefreshRequest, redis: Redis = Depends(get_redis)) -> None:
+    """Выйти из аккаунта: погасить refresh-токен этого устройства.
+
+    Без этого «выход» стирал только память браузера, а refresh-токен оставался
+    рабочим ещё тридцать суток. На телефоне, который переходит следующей смене,
+    это не выход, а видимость выхода.
+
+    Гасим именно предъявленный токен, а не все сессии сотрудника: управляющий
+    сидит и в зале с телефона, и в кабинете с компьютера, и выход на одном не
+    должен выбрасывать его со второго. Access-токен доживает свои полчаса сам —
+    отзывать его нечем, но из браузера он уже стёрт.
+
+    Ответ всегда 204, даже если токен просрочен, подделан или уже погашен:
+    выход не имеет права не сработать, иначе человек остаётся в аккаунте
+    с сообщением об ошибке и без способа выйти.
+    """
+    try:
+        token = auth_service.decode_token(payload.refresh_token, expected_type="refresh")
+    except (auth_service.TokenExpiredError, auth_service.TokenInvalidError):
+        return
+
+    if token.jti is not None:
+        await auth_service.consume_refresh_jti(redis, token.employee_id, token.jti)
+        logger.info("Сотрудник %s вышел из аккаунта", token.employee_id)
+
+
 @router.post("/ws-ticket", response_model=WsTicketOut)
 async def issue_ws_ticket(
     current: CurrentEmployee = Depends(require_employee),

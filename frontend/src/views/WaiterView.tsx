@@ -23,8 +23,8 @@ import {
 } from 'lucide-react';
 import {
   api,
-  clearSession,
   getSession,
+  logoutSession,
   openCommsSocket,
   playAudio,
   sendVoice,
@@ -307,13 +307,7 @@ export default function WaiterView({ onExit }: Props = {}) {
             {online ? 'На смене' : 'Нет связи'}
           </span>
           <button
-            onClick={
-              onExit ??
-              (() => {
-                clearSession();
-                location.reload();
-              })
-            }
+            onClick={onExit ?? (() => void logoutSession())}
             className="rounded-lg px-3 py-1.5 text-sm text-stone-400"
           >
             {onExit ? 'В кабинет' : 'Выйти'}

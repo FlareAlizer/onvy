@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { logoutSession } from '../lib/api';
 import { DEFAULT_SPACE, emptyData, makeDemoDialog, makeSpace } from './demo';
 import { getProfile, type IndustryProfile } from './industryProfiles';
 import type {
@@ -238,7 +239,15 @@ export function StoreProvider({
     [data.accounts],
   );
 
-  const logout = useCallback(() => setSession(null), []);
+  // Выход из кабинета — это выход из платформы, а не из демо-хранилища консоли.
+  // Раньше здесь стоял только setSession(null): он гасил внутренний вход
+  // консоли, после чего сессия тут же собиралась заново из платформенной, и
+  // кнопка «Выйти» не делала ничего. Чистим обе: свою — синхронно, платформенную
+  // — через logoutSession, который гасит токен на сервере и перезагружает вход.
+  const logout = useCallback(() => {
+    setSession(null);
+    void logoutSession();
+  }, []);
 
   const findCompanyByCode = useCallback<StoreValue['findCompanyByCode']>(
     (code) => {
