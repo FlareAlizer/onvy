@@ -8,7 +8,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
 from app.adapters.gigaam.speech import GigaAMSpeechRecognition
@@ -116,10 +116,18 @@ def mount_spa(app: FastAPI, dist: Path) -> None:
     async def index() -> FileResponse:
         return FileResponse(dist / "index.html", headers=index_headers)
 
-    # Прямые ссылки внутри приложения отдаём индексу, чтобы работала навигация,
-    # а /api и /ws остаются за приложением — они объявлены выше.
+    # Прямые ссылки внутри приложения отдаём индексу, чтобы работала навигация.
+    # Но только их: несуществующий путь под /api или /ws — это 404, а не разметка.
+    #
+    # Иначе опечатка в адресе и незарегистрированный роутер выглядят как рабочий
+    # ответ: код 200, тело — HTML. На этом уже обжигались дважды. Клиент падает
+    # на разборе JSON вместо понятного «нет такого метода», а проверка живости
+    # роутов даёт ложное «всё на месте» — именно так пропустили, что половина
+    # роутеров не подключена.
     @app.get("/{path:path}", include_in_schema=False)
     async def spa(path: str) -> FileResponse:
+        if path.startswith(("api/", "ws/")) or path in ("api", "ws"):
+            raise HTTPException(status_code=404, detail="Нет такого метода")
         return FileResponse(dist / "index.html", headers=index_headers)
 
 
