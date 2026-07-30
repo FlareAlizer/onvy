@@ -7,11 +7,15 @@
 
 name: onvy
 
+# Образ api. По умолчанию берётся из реестра GitHub — его собирает CI, потому
+# что сборка на боевом сервере однажды съела всю память и положила машину.
+# Локально (или если реестр недоступен) собрать всё ещё можно:
+#   docker compose -f deploy/docker-compose.yml --env-file .env build api
 x-api-image: &api-image
   build:
     context: ..
     dockerfile: deploy/Dockerfile
-  image: onvy-api:latest
+  image: ${API_IMAGE:-onvy-api:latest}
 
 services:
   postgres:

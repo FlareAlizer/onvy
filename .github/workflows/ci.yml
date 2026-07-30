@@ -2,8 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
+  # Запуск вручную: пересобрать образ, ничего не коммитя.
+  workflow_dispatch:
 
 # A newer push on the same PR cancels the in-flight run — fail fast, don't
 # burn minutes on stale commits.
@@ -13,6 +15,10 @@ concurrency:
 
 permissions:
   contents: read
+  # Публикация образа в GitHub Container Registry: сборка на боевом сервере
+  # однажды съела всю память и положила машину — теперь собираем здесь,
+  # а сервер только скачивает готовый образ.
+  packages: write
 
 env:
   UV_VERSION: "0.11.26"
@@ -110,18 +116,37 @@ jobs:
       - run: npm run build
 
   build-image:
-    name: Build Docker image
+    name: Build and publish image
     needs: [test-backend, build-frontend]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      # Публикуем только с ветки: в pull request образ незачем, там достаточно
+      # проверки, что он вообще собирается.
+      - name: Log in to registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image name in lowercase
+        id: img
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}/api" >> "$GITHUB_OUTPUT"
+
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: deploy/Dockerfile
-          push: false
-          tags: onvy-api:ci
+          push: ${{ github.event_name != 'pull_request' }}
+          # latest — то, что подтянет сервер; тег по коммиту нужен для откатов
+          # (в scripts/deploy.sh откат идёт на предыдущий образ по SHA).
+          tags: |
+            ${{ steps.img.outputs.name }}:latest
+            ${{ steps.img.outputs.name }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
