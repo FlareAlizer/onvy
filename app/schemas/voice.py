@@ -53,3 +53,12 @@ class TextMessageIn(BaseModel):
 class TextMessageResult(BaseModel):
     delivered_to: list[int] = Field(default_factory=list)
     translation_failed: bool = False
+
+
+class AssistantAskIn(BaseModel):
+    """Вопрос ассистенту текстом — когда в зале шумно или говорить при госте неловко."""
+
+    text: str = Field(min_length=1, max_length=500)
+    speak: bool = Field(
+        default=True, description="Озвучивать ответ. Выключается, когда нужен только текст"
+    )

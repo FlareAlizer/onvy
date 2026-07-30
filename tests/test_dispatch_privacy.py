@@ -7,7 +7,9 @@
 общий. Здесь это зафиксировано.
 """
 
+import pytest
 import pytest_asyncio
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -193,3 +195,65 @@ class TestГрупповаяРеплика:
         )
 
         assert получатели == []
+
+
+class TestИдГруппыВозвращаетсяВсегда:
+    """Регрессия: рация падала с 500 на каждой реплике.
+
+    Реплика сохраняется с адресатом — либо человек, либо группа (проверка базы
+    single_recipient_kind). Если resolve_group отдавала None вместо id группы,
+    строка не проходила проверку и запрос падал: официант жал кнопку и получал
+    ошибку вместо ответа. Два случая давали None — и оба были на живом пути.
+    """
+
+    @pytest.mark.parametrize("group", list(Group))
+    async def test_есть_id_у_каждой_группы(self, стенд, group):
+        """«Все» — тоже настоящая группа в базе, а не особый случай без id.
+
+        Именно на ней падала каждая реплика: экран по умолчанию адресует «всем».
+        """
+        session, venue_id, люди = стенд
+        presence = FakePresence(*люди.values())
+
+        _, group_id = await dispatch.resolve_group(
+            session, presence, venue_id=venue_id, group=group, exclude_id=люди["Азиз"]
+        )
+
+        assert group_id is not None
+
+    async def test_id_есть_даже_когда_некому_слушать(self, стенд):
+        """Смена пустая — реплика всё равно попадает в историю, значит нужен id."""
+        session, venue_id, люди = стенд
+        presence = FakePresence()
+
+        получатели, group_id = await dispatch.resolve_group(
+            session,
+            presence,
+            venue_id=venue_id,
+            group=Group.EVERYONE,
+            exclude_id=люди["Азиз"],
+        )
+
+        assert получатели == []
+        assert group_id is not None
+
+    async def test_несуществующая_группа_даёт_none(self, стенд):
+        """Обратная сторона: если группы в точке правда нет — честный None."""
+        session, venue_id, люди = стенд
+        await session.execute(
+            delete(CommGroup).where(
+                CommGroup.venue_id == venue_id, CommGroup.name == Group.BAR.value
+            )
+        )
+        await session.flush()
+
+        получатели, group_id = await dispatch.resolve_group(
+            session,
+            presence=FakePresence(*люди.values()),
+            venue_id=venue_id,
+            group=Group.BAR,
+            exclude_id=люди["Азиз"],
+        )
+
+        assert получатели == []
+        assert group_id is None

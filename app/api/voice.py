@@ -18,9 +18,13 @@ from app.db.models.employee import Employee
 from app.deps import CurrentEmployee, get_redis, require_employee
 from app.domain.intents import Group, IntentKind
 from app.domain.language import normalize
-from app.schemas.voice import StageMetricsOut, VoiceResult
+from app.schemas.voice import AssistantAskIn, StageMetricsOut, VoiceResult
 from app.services import dispatch
-from app.services.assistant_flow import AssistantOutcome, handle_voice_query
+from app.services.assistant_flow import (
+    AssistantOutcome,
+    handle_text_query,
+    handle_voice_query,
+)
 from app.services.comms_flow import deliver
 from app.services.menu import active_stop_list, load_menu
 from app.services.rate_limit import RateLimitRule, rate_limit_dependency
@@ -92,9 +96,7 @@ async def push_to_talk(
     # Адресат, выбранный на экране, применяется когда во фразе обращения не было.
     # Иначе официант, ткнувший пальцем в повара, всё равно был бы обязан назвать
     # его по имени — а он держит поднос и смотрит на гостя, не на телефон.
-    # Явное обращение в речи («кухня, два лагмана») всегда сильнее выбора на
-    # экране: человек сказал вслух, кому именно, и переспрашивать его нечестно.
-    if outcome.kind is IntentKind.ASK and (to_group or to_employee_id):
+    if _should_redirect(outcome, to_group, to_employee_id):
         outcome = _redirect_to_chosen(outcome, to_group, to_employee_id, colleagues)
 
     if outcome.kind in (IntentKind.SEND_GROUP, IntentKind.SEND_PERSON):
@@ -107,6 +109,64 @@ async def push_to_talk(
         await db.commit()
 
     return _to_response(outcome)
+
+
+@router.post(
+    "/assistant/ask",
+    response_model=VoiceResult,
+    dependencies=[Depends(_voice_rate_limit)],
+)
+async def ask_assistant(
+    payload: AssistantAskIn,
+    current: CurrentEmployee = Depends(require_employee),
+    db: AsyncSession = Depends(get_session),
+) -> VoiceResult:
+    """Спросить ассистента текстом — тот же ответ по меню, без микрофона.
+
+    Нужен там же, где текстовая реплика коллеге: в шумном зале и при госте,
+    когда говорить вслух неудобно.
+    """
+    language = normalize(current.language)
+    menu = await load_menu(db, current.venue_id)
+    stopped = await active_stop_list(db, current.venue_id)
+
+    outcome = await handle_text_query(
+        payload.text,
+        language=language,
+        menu=menu,
+        stopped=stopped,
+        answering=adapters.answering(),
+        synthesis=adapters.synthesis(),
+        speak=payload.speak,
+    )
+
+    await dispatch.save_assistant_query(
+        db, venue_id=current.venue_id, employee_id=current.id, outcome=outcome
+    )
+    await db.commit()
+
+    return _to_response(outcome)
+
+
+def _should_redirect(
+    outcome: AssistantOutcome, to_group: str | None, to_employee_id: int | None
+) -> bool:
+    """Отдать ли фразу получателю, выбранному на экране, вместо ассистента.
+
+    Правило одно: сказанное вслух сильнее выбранного пальцем. Названный отдел
+    («кухня, два лагмана») уже увёл фразу в рацию раньше — сюда доходят только
+    вопросы. Из них перенаправляем те, где ассистента вслух не звали: человек
+    держит поднос и смотрит на гостя, а не на телефон, и требовать от него имя
+    после того, как он ткнул в повара, — лишняя работа.
+
+    Обратное тоже верно: «Онви, что в лагмане» адресовано ассистенту явно, и
+    выбранный на экране отдел этот вопрос не перехватывает.
+    """
+    if outcome.kind is not IntentKind.ASK:
+        return False
+    if outcome.addressed_assistant:
+        return False
+    return bool(to_group or to_employee_id)
 
 
 def _redirect_to_chosen(
@@ -181,6 +241,26 @@ async def _forward_to_colleagues(
         )
         group_id = None
         recipient_employee_id = outcome.person_id
+
+    # Ни группы, ни человека — передавать некуда. Раньше такая реплика доходила
+    # до базы и валила запрос проверкой single_recipient_kind: официант жал
+    # кнопку и получал ошибку вместо ответа. Говорим честно и не пишем битую строку.
+    if recipient_employee_id is None and group_id is None:
+        logger.warning(
+            "Реплика без адресата: kind=%s group=%s person=%s",
+            outcome.kind,
+            outcome.group,
+            outcome.person_id,
+        )
+        return VoiceResult(
+            intent=outcome.kind.value,
+            query_text=outcome.query_text,
+            answer_text="Не понял, кому передать. Назовите отдел или имя.",
+            grounded_on=[],
+            degraded=outcome.degraded,
+            delivered_to=[],
+            metrics=StageMetricsOut(asr_ms=outcome.metrics.asr_ms, total_ms=outcome.metrics.asr_ms),
+        )
 
     broadcast = await deliver(
         outcome.payload,

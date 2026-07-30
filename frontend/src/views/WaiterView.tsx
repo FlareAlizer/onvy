@@ -17,6 +17,7 @@ import {
   Mic,
   Radio,
   Send,
+  Sparkles,
   Users,
   WifiOff,
 } from 'lucide-react';
@@ -33,9 +34,13 @@ import {
 import { startRecording, stopRecording } from '../lib/recorder';
 import PersonPicker from '../components/PersonPicker';
 
-// Адресат для явного выбора пальцем — как в рации управляющего. Голосовую
-// реплику это не меняет: сервер сам разбирает, кому она адресована, по
-// смыслу фразы («Азиз, подойди» / «кухня, два лагмана»).
+// Кому уходит нажатие кнопки. Выбор пальцем нужен для случая, когда называть
+// адресата вслух неудобно, но он не отменяет разбор речи: сказанное вслух
+// («Азиз, подойди» / «кухня, два лагмана» / «Онви, что в лагмане») всегда сильнее.
+//
+// По умолчанию выбран ассистент — это самое частое действие в смене, вопрос по
+// меню. Раньше по умолчанию стояло «всем», и любой вопрос уходил в рацию:
+// до ассистента нельзя было добраться вообще.
 type Группа = 'все' | 'кухня' | 'бар' | 'зал';
 
 const ГРУППЫ: { key: Группа; label: string }[] = [
@@ -45,9 +50,15 @@ const ГРУППЫ: { key: Группа; label: string }[] = [
   { key: 'зал', label: 'Залу' },
 ];
 
-type Адресат = { kind: 'group'; group: Группа } | { kind: 'person'; id: number; name: string };
+type Адресат =
+  | { kind: 'assistant' }
+  | { kind: 'group'; group: Группа }
+  | { kind: 'person'; id: number; name: string };
+
+const АССИСТЕНТ: Адресат = { kind: 'assistant' };
 
 function адресатLabel(адресат: Адресат): string {
+  if (адресат.kind === 'assistant') return 'Ассистенту';
   if (адресат.kind === 'person') return адресат.name;
   return ГРУППЫ.find((g) => g.key === адресат.group)?.label ?? адресат.group;
 }
@@ -85,7 +96,7 @@ export default function WaiterView({ onExit }: Props = {}) {
   // Выбор адресата пальцем и отправка текстом — запасной путь для того же
   // случая, когда голосом неудобно (шум, не хочет говорить при госте).
   const [панельОткрыта, setПанельОткрыта] = useState(false);
-  const [адресат, setАдресат] = useState<Адресат>({ kind: 'group', group: 'все' });
+  const [адресат, setАдресат] = useState<Адресат>(АССИСТЕНТ);
   const [текст, setТекст] = useState('');
   const [отправка, setОтправка] = useState(false);
 
@@ -101,6 +112,17 @@ export default function WaiterView({ onExit }: Props = {}) {
     setError(null);
     setОтправка(true);
     try {
+      // Вопрос ассистенту текстом — тот же ответ по меню, без микрофона:
+      // в шумном зале и при госте говорить вслух неудобно.
+      if (адресат.kind === 'assistant') {
+        const ответ = await api<VoiceResult>('/assistant/ask', {
+          method: 'POST',
+          body: JSON.stringify({ text: сообщение }),
+        });
+        handleResult(ответ);
+        setТекст('');
+        return;
+      }
       const тело =
         адресат.kind === 'person'
           ? { text: сообщение, recipient_id: адресат.id }
@@ -188,19 +210,30 @@ export default function WaiterView({ onExit }: Props = {}) {
     }
   }, []);
 
+  // Адресат читается через ref: обработчик висит на медиа-клавише гарнитуры и
+  // пересоздаётся редко, а замыкание на состояние отправляло бы реплику тому,
+  // кто был выбран при первом рендере, а не сейчас.
+  const адресатRef = useRef<Адресат>(адресат);
+  адресатRef.current = адресат;
+
   const finish = useCallback(async () => {
     if (phaseRef.current !== 'recording') return;
     setPhase('sending');
     navigator.vibrate?.(10);
+    const кому = адресатRef.current;
     try {
       const blob = await stopRecording();
-      const result: VoiceResult = await sendVoice(blob, false, {
-        // Передаём выбранного на экране адресата: сервер применит его только
-        // если в самой фразе обращения не было.
-        ...(адресат.kind === 'person'
-          ? { employeeId: адресат.id }
-          : { group: адресат.group }),
-      });
+      // Ассистент выбран — получателя не навязываем, и сервер сам решает по фразе:
+      // вопрос по меню он ответит сам, названного вслух коллегу найдёт и передаст.
+      const result: VoiceResult = await sendVoice(
+        blob,
+        false,
+        кому.kind === 'assistant'
+          ? undefined
+          : кому.kind === 'person'
+            ? { employeeId: кому.id }
+            : { group: кому.group },
+      );
       handleResult(result);
     } catch {
       setError('Не отправилось. Проверьте связь и повторите.');
@@ -296,7 +329,9 @@ export default function WaiterView({ onExit }: Props = {}) {
         className="mx-5 mb-2 flex items-center justify-between gap-2 rounded-xl bg-stone-900 px-4 text-sm font-semibold text-stone-200"
       >
         <span className="flex items-center gap-2">
-          {адресат.kind === 'person' ? (
+          {адресат.kind === 'assistant' ? (
+            <Sparkles size={16} className="text-sky-400" />
+          ) : адресат.kind === 'person' ? (
             <Lock size={16} className="text-emerald-400" />
           ) : (
             <Users size={16} className="text-stone-400" />
@@ -311,7 +346,21 @@ export default function WaiterView({ onExit }: Props = {}) {
 
       {панельОткрыта && (
         <div className="mx-5 mb-2 rounded-2xl bg-stone-900/60 px-4 py-3">
-          <div className="grid grid-cols-4 gap-2">
+          <button
+            onClick={() => setАдресат(АССИСТЕНТ)}
+            style={{ minHeight: 44 }}
+            className={`flex w-full items-center gap-2 rounded-xl px-3 text-sm font-semibold transition-colors duration-150 ease-out ${
+              адресат.kind === 'assistant'
+                ? 'bg-sky-500 text-stone-950'
+                : 'bg-stone-800 text-stone-300'
+            }`}
+          >
+            <Sparkles size={16} />
+            Ассистенту — спросить про меню
+          </button>
+
+          <p className="mt-3 text-xs font-medium text-stone-500">Или в рацию, отделу</p>
+          <div className="mt-1 grid grid-cols-4 gap-2">
             {ГРУППЫ.map(({ key, label }) => (
               <button
                 key={key}
@@ -335,11 +384,7 @@ export default function WaiterView({ onExit }: Props = {}) {
               excludeId={session?.employeeId ?? 0}
               selectedId={адресат.kind === 'person' ? адресат.id : null}
               onSelect={(person) =>
-                setАдресат(
-                  person
-                    ? { kind: 'person', id: person.id, name: person.name }
-                    : { kind: 'group', group: 'все' },
-                )
+                setАдресат(person ? { kind: 'person', id: person.id, name: person.name } : АССИСТЕНТ)
               }
             />
           </div>
@@ -350,12 +395,25 @@ export default function WaiterView({ onExit }: Props = {}) {
             </p>
           )}
 
+          {/* Главное правило продукта, и его надо знать наизусть: выбор здесь —
+              только для случая, когда называть адресата вслух неудобно.
+              Сказанное голосом всегда сильнее выбранного пальцем. */}
+          <p className="mt-3 border-t border-stone-800 pt-3 text-xs leading-relaxed text-stone-500">
+            Сказанное вслух сильнее выбора здесь.{' '}
+            <span className="text-stone-400">«Кухня, два лагмана»</span> уйдёт кухне,{' '}
+            <span className="text-stone-400">«Азиз, подойди»</span> — Азизу,{' '}
+            <span className="text-stone-400">«Онви, что в лагмане»</span> — ассистенту, кого бы
+            вы здесь ни выбрали.
+          </p>
+
           <div className="mt-3 flex gap-2">
             <input
               value={текст}
               onChange={(e) => setТекст(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && void отправитьТекстом()}
-              placeholder="Написать текстом"
+              placeholder={
+                адресат.kind === 'assistant' ? 'Спросить про меню' : 'Написать текстом'
+              }
               className="min-w-0 flex-1 rounded-xl bg-stone-800 px-4 py-3 text-base outline-none ring-1 ring-stone-700 focus:ring-2 focus:ring-emerald-500"
             />
             <button

@@ -511,16 +511,36 @@ export function StoreProvider({
     setSession(null);
   }, []);
 
+  /**
+   * Данные, как их видят экраны: демо-сотрудник, к которому привязан вошедший,
+   * носит его настоящее имя.
+   *
+   * Иначе имя раздваивалось: в рации и в шапке — настоящее (оно из сессии
+   * платформы), а на экранах кабинета — имя демо-сотрудника, и это читалось как
+   * вход под чужим аккаунтом. Подменяем на выдаче, а не в хранилище: цифры
+   * остаются демонстрационными и честно принадлежат демо-сотруднику.
+   */
+  const visibleData = useMemo(() => {
+    const id = session?.employeeId;
+    const name = session?.name;
+    if (!id || !name) return data;
+    if (!data.employees.some((e) => e.id === id && e.name !== name)) return data;
+    return {
+      ...data,
+      employees: data.employees.map((e) => (e.id === id ? { ...e, name } : e)),
+    };
+  }, [data, session?.employeeId, session?.name]);
+
   const me = useMemo(() => {
     if (!session?.employeeId) return null;
-    return data.employees.find((e) => e.id === session.employeeId) ?? null;
-  }, [session, data.employees]);
+    return visibleData.employees.find((e) => e.id === session.employeeId) ?? null;
+  }, [session, visibleData.employees]);
 
   const focus = session?.focus ?? data.accounts.find((a) => a.role === 'rop')?.focus ?? 'sales';
 
   const value = useMemo<StoreValue>(
     () => ({
-      data,
+      data: visibleData,
       profile,
       session,
       me,
@@ -542,7 +562,7 @@ export function StoreProvider({
       resetDemo,
     }),
     [
-      data,
+      visibleData,
       profile,
       session,
       me,

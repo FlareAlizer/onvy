@@ -148,6 +148,10 @@ class Intent:
     group: Group | None = None
     person_id: int | None = None
     person_name: str | None = None
+    # Ассистента позвали вслух по имени («Онви, что в лагмане»). Такой вопрос
+    # адресован именно ему, и выбранный на экране получатель его не перехватывает —
+    # ровно так же, как названный вслух отдел сильнее выбора пальцем.
+    addressed_assistant: bool = False
 
 
 @dataclass(frozen=True)
@@ -232,7 +236,7 @@ def parse(
     addressee = _find_addressee(tokens, colleagues)
 
     if addressee is None:
-        return Intent(kind=IntentKind.ASK, payload=body)
+        return Intent(kind=IntentKind.ASK, payload=body, addressed_assistant=had_wake)
 
     payload = " ".join(original[addressee.position + 1 :]).strip(" ,.!?")
 

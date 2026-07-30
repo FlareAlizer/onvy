@@ -58,28 +58,30 @@ async def resolve_group(
     а копить непрочитанное для рации неправильно — устный разговор не догоняет
     человека через час.
     """
+    # id группы ищем всегда и до проверки присутствия — включая «все».
+    # Реплика попадает в историю смены даже если слушать её сейчас некому,
+    # а строка без адресата не проходит проверку базы (single_recipient_kind).
+    group_id = (
+        await db.execute(
+            select(CommGroup.id).where(
+                CommGroup.venue_id == venue_id,
+                CommGroup.name == group.value,
+                CommGroup.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if group_id is None:
+        logger.warning("В точке %s нет группы «%s»", venue_id, group.value)
+        return [], None
+
     online = await presence.online(venue_id)
     online.discard(exclude_id)
     if not online:
-        return [], None
+        return [], group_id
 
-    group_id: int | None = None
     if group is Group.EVERYONE:
         candidate_ids = online
     else:
-        found = (
-            await db.execute(
-                select(CommGroup.id).where(
-                    CommGroup.venue_id == venue_id,
-                    CommGroup.name == group.value,
-                    CommGroup.deleted_at.is_(None),
-                )
-            )
-        ).scalar_one_or_none()
-        if found is None:
-            logger.warning("В точке %s нет группы «%s»", venue_id, group.value)
-            return [], None
-        group_id = found
         members = (
             (
                 await db.execute(

@@ -12,7 +12,14 @@
 import logging
 from dataclasses import dataclass, field
 
-from app.domain.intents import Colleague, Group, Intent, IntentKind, parse
+from app.domain.intents import (
+    Colleague,
+    Group,
+    Intent,
+    IntentKind,
+    detect_wake_word,
+    parse,
+)
 from app.domain.language import Language
 from app.domain.menu_search import search
 from app.ports.answer import AnswerPort, AnswerUnavailable
@@ -61,6 +68,9 @@ class AssistantOutcome:
     person_id: int | None = None
     person_name: str | None = None
     payload: str = ""
+    # Ассистента позвали вслух («Онви, …») — выбранный на экране получатель
+    # такой вопрос не перехватывает.
+    addressed_assistant: bool = False
     # Что именно отвалилось: asr, answer, tts. Пусто — всё отработало штатно.
     degraded: str | None = None
     metrics: StageMetrics = field(default_factory=StageMetrics)
@@ -127,6 +137,7 @@ async def handle_voice_query(
 
     return await _answer_from_menu(
         intent=intent,
+        addressed_assistant=intent.addressed_assistant,
         query_text=recognized.text,
         language=language,
         menu=menu,
@@ -134,6 +145,44 @@ async def handle_voice_query(
         answering=answering,
         synthesis=synthesis,
         metrics=metrics,
+    )
+
+
+async def handle_text_query(
+    text: str,
+    *,
+    language: Language,
+    menu: list[MenuItemData],
+    stopped: frozenset[str],
+    answering: AnswerPort,
+    synthesis: SpeechSynthesisPort,
+    speak: bool = True,
+) -> AssistantOutcome:
+    """Ответить на вопрос, набранный текстом.
+
+    Тот же путь, что у голоса, минус распознавание: адресата здесь не разбираем —
+    человек выбрал ассистента явно, а реплику коллеге отправляет другой роут.
+    Обращение «Онви» в начале отрезаем: набирают так же, как говорят.
+    """
+    metrics = StageMetrics()
+    _, body = detect_wake_word(text)
+    body = body.strip(" ,.!?") or text.strip()
+    if not body:
+        return await _speak_only(
+            NOTHING_HEARD, language, synthesis, metrics, kind=IntentKind.EMPTY
+        )
+
+    return await _answer_from_menu(
+        intent=Intent(kind=IntentKind.ASK, payload=body),
+        addressed_assistant=True,
+        query_text=body,
+        language=language,
+        menu=menu,
+        stopped=stopped,
+        answering=answering,
+        synthesis=synthesis,
+        metrics=metrics,
+        speak=speak,
     )
 
 
@@ -152,6 +201,7 @@ def _to_comms(intent: Intent, query_text: str, metrics: StageMetrics) -> Assista
 async def _answer_from_menu(
     *,
     intent: Intent,
+    addressed_assistant: bool = False,
     query_text: str,
     language: Language,
     menu: list[MenuItemData],
@@ -159,6 +209,7 @@ async def _answer_from_menu(
     answering: AnswerPort,
     synthesis: SpeechSynthesisPort,
     metrics: StageMetrics,
+    speak: bool = True,
 ) -> AssistantOutcome:
     from app.adapters._timing import measure
 
@@ -172,7 +223,7 @@ async def _answer_from_menu(
         )
     except AnswerUnavailable as exc:
         logger.warning("Ассистент отказал (%s): %s", exc.provider, exc)
-        return await _speak_only(
+        failed = await _speak_only(
             ASSISTANT_DOWN,
             language,
             synthesis,
@@ -181,17 +232,28 @@ async def _answer_from_menu(
             query_text=query_text,
             degraded="answer",
         )
+        failed.addressed_assistant = addressed_assistant
+        return failed
 
     metrics.answer_ms = answer.duration_ms
-    outcome = await _speak_only(
-        answer.text,
-        language,
-        synthesis,
-        metrics,
-        kind=IntentKind.ASK,
-        query_text=query_text,
-    )
+    if not speak:
+        outcome = AssistantOutcome(
+            kind=IntentKind.ASK,
+            query_text=query_text,
+            answer_text=answer.text,
+            metrics=metrics,
+        )
+    else:
+        outcome = await _speak_only(
+            answer.text,
+            language,
+            synthesis,
+            metrics,
+            kind=IntentKind.ASK,
+            query_text=query_text,
+        )
     outcome.grounded_on = answer.grounded_on
+    outcome.addressed_assistant = addressed_assistant
     return outcome
 
 
