@@ -263,6 +263,14 @@ async def refresh(
             expires_in=outcome.tokens.expires_in,
         )
 
+    if outcome.status == "logged_out":
+        # Этим токеном уже вышли. Просим войти заново, но сессии на других
+        # устройствах не трогаем: осознанный выход — не компрометация.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Вы вышли из аккаунта, войдите заново",
+        )
+
     if outcome.status == "reuse":
         # Токен использован давно — окно повтора уже закрылось. Значит это не
         # потерянный ответ, а чужая копия токена. Гасим все сессии сотрудника.
@@ -308,6 +316,10 @@ async def logout(payload: RefreshRequest, redis: Redis = Depends(get_redis)) -> 
 
     if token.jti is not None:
         await auth_service.consume_refresh_jti(redis, token.employee_id, token.jti)
+        # Отмечаем именно как выход, а не просто гасим: иначе устаревшая вкладка,
+        # предъявившая тот же токен, была бы принята за кражу и погасила все
+        # сессии сотрудника — включая компьютер в кабинете.
+        await auth_service.mark_logged_out(redis, token.employee_id, token.jti)
         logger.info("Сотрудник %s вышел из аккаунта", token.employee_id)
 
 

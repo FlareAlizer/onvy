@@ -304,13 +304,36 @@ REFRESH_REPLAY_GRACE_SECONDS = 30
 _REFRESH_REPLAY_KEY = "auth:refresh_replay:{employee_id}:{jti}"
 
 
+# Токены, погашенные осознанным выходом. Хранятся отдельно от «использованных»,
+# потому что означают совсем другое.
+#
+# Без этой отметки выход и кража неотличимы: в обоих случаях jti из Redis исчез.
+# Сотрудник вышел на телефоне, устаревшая вкладка предъявила тот же токен — и
+# сервер, приняв это за кражу, гасил ВСЕ его сессии, включая компьютер в
+# кабинете. Выход на одном устройстве не должен выкидывать со второго.
+#
+# Отметка живёт столько же, сколько жил бы сам токен: позже он всё равно
+# просрочен и до этой проверки не доходит.
+_LOGGED_OUT_KEY = "auth:logged_out:{employee_id}:{jti}"
+
+
+async def mark_logged_out(redis: Redis, employee_id: int, jti: str) -> None:
+    """Запомнить, что этот токен погашен выходом, а не потерян."""
+    await redis.set(
+        _LOGGED_OUT_KEY.format(employee_id=employee_id, jti=jti),
+        "1",
+        ex=settings.refresh_token_ttl_days * 86400,
+    )
+
+
 @dataclass(frozen=True)
 class RefreshOutcome:
     """Чем закончилась попытка обновить пару токенов."""
 
     # rotated — обычное обновление; replayed — повтор в пределах окна;
+    # logged_out — этим токеном уже вышли, нужен новый вход, но это не тревога;
     # reuse — предъявлен давно использованный токен, это компрометация.
-    status: Literal["rotated", "replayed", "reuse"]
+    status: Literal["rotated", "replayed", "logged_out", "reuse"]
     tokens: IssuedTokens | None = None
 
 
@@ -336,6 +359,11 @@ async def rotate_refresh_token(
             ex=REFRESH_REPLAY_GRACE_SECONDS,
         )
         return RefreshOutcome(status="rotated", tokens=tokens)
+
+    if await redis.exists(_LOGGED_OUT_KEY.format(employee_id=employee_id, jti=jti)):
+        # Этим токеном вышли из аккаунта. Нужен новый вход, но тревоги нет —
+        # и остальные устройства сотрудника трогать не за что.
+        return RefreshOutcome(status="logged_out")
 
     stored = await redis.get(_REFRESH_REPLAY_KEY.format(employee_id=employee_id, jti=jti))
     if stored:

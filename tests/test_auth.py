@@ -526,3 +526,57 @@ async def test_logout_survives_expired_token(client: AsyncClient, session_maker)
     resp = await client.post("/api/auth/logout", json={"refresh_token": просроченный})
 
     assert resp.status_code == 204
+
+
+async def test_logged_out_token_does_not_revoke_other_devices(
+    client: AsyncClient, session_maker
+) -> None:
+    """Тот случай, который поймала проверка на живом сервере.
+
+    Выход гасит jti, и предъявление того же токена внешне неотличимо от кражи —
+    сервер гасил ВСЕ сессии сотрудника, включая компьютер в кабинете. То есть
+    выход на телефоне выкидывал управляющего отовсюду. Осознанный выход теперь
+    помечается отдельно: просим войти заново, но тревогу не поднимаем.
+    """
+    venue_id = await _make_venue(session_maker)
+    employee_id = await _make_employee(session_maker, venue_id=venue_id, pin="4711")
+    телефон = (await _login(client, employee_id, "4711"))["refresh_token"]
+    компьютер = (await _login(client, employee_id, "4711"))["refresh_token"]
+
+    await client.post("/api/auth/logout", json={"refresh_token": телефон})
+
+    # Устаревшая вкладка на телефоне пробует обновиться погашенным токеном.
+    отказ = await client.post("/api/auth/refresh", json={"refresh_token": телефон})
+    assert отказ.status_code == 401
+    assert отказ.json()["detail"] == "Вы вышли из аккаунта, войдите заново"
+
+    # Компьютер в кабинете продолжает работать.
+    компьютер_жив = await client.post("/api/auth/refresh", json={"refresh_token": компьютер})
+    assert компьютер_жив.status_code == 200
+
+
+async def test_stolen_token_still_revokes_everything(
+    client: AsyncClient, session_maker, redis_client: Redis
+) -> None:
+    """Обратная сторона: настоящая кража по-прежнему гасит все сессии.
+
+    Отличие от выхода — токен был использован для обновления, а не погашен
+    осознанно. Такой токен в чужих руках означает компрометацию.
+    """
+    venue_id = await _make_venue(session_maker)
+    employee_id = await _make_employee(session_maker, venue_id=venue_id, pin="4711")
+    украденный = (await _login(client, employee_id, "4711"))["refresh_token"]
+
+    первое = await client.post("/api/auth/refresh", json={"refresh_token": украденный})
+    новый = первое.json()["refresh_token"]
+    # Окно повтора закрылось — дальше это уже не потерянный ответ, а чужая копия.
+    jti = auth_service.decode_token(украденный, expected_type="refresh").jti
+    await redis_client.delete(f"auth:refresh_replay:{employee_id}:{jti}")
+
+    кража = await client.post("/api/auth/refresh", json={"refresh_token": украденный})
+    assert кража.status_code == 401
+    assert кража.json()["detail"] == "Токен уже был использован, войдите заново"
+
+    # Все сессии сотрудника отозваны, включая только что выданную.
+    после = await client.post("/api/auth/refresh", json={"refresh_token": новый})
+    assert после.status_code == 401
