@@ -9,8 +9,19 @@
 // в кармане. Это основной способ работы на пилоте, экран — запасной.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertTriangle, Loader2, Mic, Radio, WifiOff } from 'lucide-react';
 import {
+  AlertTriangle,
+  ChevronDown,
+  Loader2,
+  Lock,
+  Mic,
+  Radio,
+  Send,
+  Users,
+  WifiOff,
+} from 'lucide-react';
+import {
+  api,
   clearSession,
   getSession,
   openCommsSocket,
@@ -20,6 +31,26 @@ import {
   type VoiceResult,
 } from '../lib/api';
 import { startRecording, stopRecording } from '../lib/recorder';
+import PersonPicker from '../components/PersonPicker';
+
+// Адресат для явного выбора пальцем — как в рации управляющего. Голосовую
+// реплику это не меняет: сервер сам разбирает, кому она адресована, по
+// смыслу фразы («Азиз, подойди» / «кухня, два лагмана»).
+type Группа = 'все' | 'кухня' | 'бар' | 'зал';
+
+const ГРУППЫ: { key: Группа; label: string }[] = [
+  { key: 'все', label: 'Всем' },
+  { key: 'кухня', label: 'Кухне' },
+  { key: 'бар', label: 'Бару' },
+  { key: 'зал', label: 'Залу' },
+];
+
+type Адресат = { kind: 'group'; group: Группа } | { kind: 'person'; id: number; name: string };
+
+function адресатLabel(адресат: Адресат): string {
+  if (адресат.kind === 'person') return адресат.name;
+  return ГРУППЫ.find((g) => g.key === адресат.group)?.label ?? адресат.group;
+}
 
 type Phase = 'idle' | 'recording' | 'sending';
 
@@ -51,11 +82,46 @@ export default function WaiterView({ onExit }: Props = {}) {
   const socketRef = useRef<WebSocket | null>(null);
   const phaseRef = useRef<Phase>('idle');
 
+  // Выбор адресата пальцем и отправка текстом — запасной путь для того же
+  // случая, когда голосом неудобно (шум, не хочет говорить при госте).
+  const [панельОткрыта, setПанельОткрыта] = useState(false);
+  const [адресат, setАдресат] = useState<Адресат>({ kind: 'group', group: 'все' });
+  const [текст, setТекст] = useState('');
+  const [отправка, setОтправка] = useState(false);
+
   phaseRef.current = phase;
 
   const push = useCallback((item: Omit<FeedItem, 'id'>) => {
     setFeed((current) => [{ ...item, id: crypto.randomUUID() }, ...current].slice(0, 12));
   }, []);
+
+  const отправитьТекстом = async () => {
+    const сообщение = текст.trim();
+    if (!сообщение) return;
+    setError(null);
+    setОтправка(true);
+    try {
+      const тело =
+        адресат.kind === 'person'
+          ? { text: сообщение, recipient_id: адресат.id }
+          : { text: сообщение, group: адресат.group };
+      const результат = await api<{ delivered_to: number[] }>('/comms/text', {
+        method: 'POST',
+        body: JSON.stringify(тело),
+      });
+      push({
+        kind: 'sent',
+        title: адресат.kind === 'person' ? `Лично: ${адресат.name}` : `Передал: ${адресатLabel(адресат)}`,
+        text: сообщение,
+        warning: результат.delivered_to.length === 0 ? 'Никого нет на связи' : undefined,
+      });
+      setТекст('');
+    } catch {
+      setError('Не отправилось. Проверьте связь.');
+    } finally {
+      setОтправка(false);
+    }
+  };
 
   // --- Канал рации -------------------------------------------------------
   useEffect(() => {
@@ -128,7 +194,13 @@ export default function WaiterView({ onExit }: Props = {}) {
     navigator.vibrate?.(10);
     try {
       const blob = await stopRecording();
-      const result: VoiceResult = await sendVoice(blob);
+      const result: VoiceResult = await sendVoice(blob, false, {
+        // Передаём выбранного на экране адресата: сервер применит его только
+        // если в самой фразе обращения не было.
+        ...(адресат.kind === 'person'
+          ? { employeeId: адресат.id }
+          : { group: адресат.group }),
+      });
       handleResult(result);
     } catch {
       setError('Не отправилось. Проверьте связь и повторите.');
@@ -216,6 +288,94 @@ export default function WaiterView({ onExit }: Props = {}) {
         </div>
       </header>
 
+      {/* Кому уходит реплика — видно всегда, меняется одним касанием.
+          Разворачивает список групп и коллег для точного адресата. */}
+      <button
+        onClick={() => setПанельОткрыта((v) => !v)}
+        style={{ minHeight: 44 }}
+        className="mx-5 mb-2 flex items-center justify-between gap-2 rounded-xl bg-stone-900 px-4 text-sm font-semibold text-stone-200"
+      >
+        <span className="flex items-center gap-2">
+          {адресат.kind === 'person' ? (
+            <Lock size={16} className="text-emerald-400" />
+          ) : (
+            <Users size={16} className="text-stone-400" />
+          )}
+          Кому: {адресатLabel(адресат)}
+        </span>
+        <ChevronDown
+          size={18}
+          className={`transition-transform duration-150 ${панельОткрыта ? 'rotate-180' : ''}`}
+        />
+      </button>
+
+      {панельОткрыта && (
+        <div className="mx-5 mb-2 rounded-2xl bg-stone-900/60 px-4 py-3">
+          <div className="grid grid-cols-4 gap-2">
+            {ГРУППЫ.map(({ key, label }) => (
+              <button
+                key={key}
+                onClick={() => setАдресат({ kind: 'group', group: key })}
+                style={{ minHeight: 44 }}
+                className={`rounded-xl text-sm font-semibold transition-colors duration-150 ease-out ${
+                  адресат.kind === 'group' && адресат.group === key
+                    ? 'bg-emerald-500 text-stone-950'
+                    : 'bg-stone-800 text-stone-300'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <p className="mt-3 text-xs font-medium text-stone-500">Или лично</p>
+          <div className="mt-1">
+            <PersonPicker
+              venueId={session?.venueId ?? 0}
+              excludeId={session?.employeeId ?? 0}
+              selectedId={адресат.kind === 'person' ? адресат.id : null}
+              onSelect={(person) =>
+                setАдресат(
+                  person
+                    ? { kind: 'person', id: person.id, name: person.name }
+                    : { kind: 'group', group: 'все' },
+                )
+              }
+            />
+          </div>
+          {адресат.kind === 'person' && (
+            <p className="mt-1 flex items-center gap-1.5 text-xs text-emerald-300">
+              <Lock size={12} />
+              Лично — услышит только {адресат.name}, зал не услышит
+            </p>
+          )}
+
+          <div className="mt-3 flex gap-2">
+            <input
+              value={текст}
+              onChange={(e) => setТекст(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && void отправитьТекстом()}
+              placeholder="Написать текстом"
+              className="min-w-0 flex-1 rounded-xl bg-stone-800 px-4 py-3 text-base outline-none ring-1 ring-stone-700 focus:ring-2 focus:ring-emerald-500"
+            />
+            <button
+              onClick={() => void отправитьТекстом()}
+              disabled={!текст.trim() || отправка}
+              style={{ minHeight: 44, minWidth: 44 }}
+              className="shrink-0 rounded-xl bg-stone-700 px-4 text-stone-200 disabled:text-stone-600"
+            >
+              <Send size={20} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Всегда на виду: официант не читает документацию, а кнопку внизу
+          понимает и голосом, если просто назвать имя или группу. */}
+      <p className="px-5 pb-2 text-xs leading-relaxed text-stone-500">
+        Голосом можно сказать: «Азиз, подойди» или «кухня, два лагмана»
+      </p>
+
       {error && (
         <div className="mx-5 mb-3 flex items-start gap-2 rounded-xl bg-red-500/15 px-4 py-3 text-sm text-red-200">
           <AlertTriangle size={18} className="mt-0.5 shrink-0" />
@@ -226,9 +386,9 @@ export default function WaiterView({ onExit }: Props = {}) {
       <main className="min-h-0 flex-1 overflow-y-auto px-5 pb-4">
         {feed.length === 0 ? (
           <p className="pt-8 text-center text-base leading-relaxed text-stone-500">
-            Спросите про блюдо или передайте на кухню.
+            Спросите про блюдо, позовите коллегу или передайте на кухню.
             <br />
-            «Онви, что в составе лагмана»
+            «Онви, что в составе лагмана» · «Азиз, подойди»
           </p>
         ) : (
           <ul className="space-y-3">

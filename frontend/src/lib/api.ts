@@ -243,11 +243,25 @@ export type VoiceResult = {
   metrics: StageMetrics;
 };
 
-/** Отправить запись с кнопки. */
-export async function sendVoice(blob: Blob, alwaysOn = false): Promise<VoiceResult> {
+/** Кому уходит голосовая реплика, если во фразе не назвали адресата. */
+export type VoiceTarget = { group?: string; employeeId?: number };
+
+/** Отправить запись с кнопки.
+ *
+ * target — то, что выбрано на экране. Сервер применяет его только когда в самой
+ * фразе обращения не было: сказанное вслух («кухня, два лагмана») всегда
+ * сильнее выбранного пальцем.
+ */
+export async function sendVoice(
+  blob: Blob,
+  alwaysOn = false,
+  target?: VoiceTarget,
+): Promise<VoiceResult> {
   const form = new FormData();
   form.append('audio', blob, 'clip.pcm');
   form.append('always_on', String(alwaysOn));
+  if (target?.employeeId !== undefined) form.append('to_employee_id', String(target.employeeId));
+  else if (target?.group) form.append('to_group', target.group);
   const resp = await request('/voice/push-to-talk', { method: 'POST', body: form });
   if (!resp.ok) throw new ApiError(await readError(resp), resp.status);
   return (await resp.json()) as VoiceResult;

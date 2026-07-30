@@ -16,7 +16,7 @@ from app import adapters
 from app.db import get_session
 from app.db.models.employee import Employee
 from app.deps import CurrentEmployee, get_redis, require_employee
-from app.domain.intents import IntentKind
+from app.domain.intents import Group, IntentKind
 from app.domain.language import normalize
 from app.schemas.voice import StageMetricsOut, VoiceResult
 from app.services import dispatch
@@ -58,6 +58,13 @@ async def push_to_talk(
         default=False,
         description="Режим постоянного прослушивания: без обращения «Онви» фраза игнорируется",
     ),
+    to_group: str | None = Form(
+        default=None,
+        description="Адресат, выбранный на экране: зал, кухня, бар или все",
+    ),
+    to_employee_id: int | None = Form(
+        default=None, description="Адресат, выбранный на экране: конкретный сотрудник"
+    ),
     current: CurrentEmployee = Depends(require_employee),
     db: AsyncSession = Depends(get_session),
     redis: Redis = Depends(get_redis),
@@ -82,6 +89,14 @@ async def push_to_talk(
         require_wake_word=always_on,
     )
 
+    # Адресат, выбранный на экране, применяется когда во фразе обращения не было.
+    # Иначе официант, ткнувший пальцем в повара, всё равно был бы обязан назвать
+    # его по имени — а он держит поднос и смотрит на гостя, не на телефон.
+    # Явное обращение в речи («кухня, два лагмана») всегда сильнее выбора на
+    # экране: человек сказал вслух, кому именно, и переспрашивать его нечестно.
+    if outcome.kind is IntentKind.ASK and (to_group or to_employee_id):
+        outcome = _redirect_to_chosen(outcome, to_group, to_employee_id, colleagues)
+
     if outcome.kind in (IntentKind.SEND_GROUP, IntentKind.SEND_PERSON):
         return await _forward_to_colleagues(outcome, current, db, redis, language)
 
@@ -92,6 +107,52 @@ async def push_to_talk(
         await db.commit()
 
     return _to_response(outcome)
+
+
+def _redirect_to_chosen(
+    outcome: AssistantOutcome,
+    to_group: str | None,
+    to_employee_id: int | None,
+    colleagues: list,
+) -> AssistantOutcome:
+    """Отправить фразу тому, кого выбрали на экране, вместо ответа ассистента.
+
+    Сам текст фразы уже распознан — меняем только адресата и вид реплики.
+    Ответ ассистента при этом не озвучиваем: его не просили.
+    """
+    payload = outcome.query_text.strip()
+    if not payload:
+        return outcome
+
+    if to_employee_id is not None:
+        name = next(
+            (c.nickname or c.name for c in colleagues if c.id == to_employee_id), None
+        )
+        if name is None:
+            # Выбрали того, кого нет в этой точке — не угадываем, отвечаем как есть.
+            logger.warning("Адресат %s не найден в точке", to_employee_id)
+            return outcome
+        return AssistantOutcome(
+            kind=IntentKind.SEND_PERSON,
+            query_text=outcome.query_text,
+            payload=payload,
+            person_id=to_employee_id,
+            person_name=name,
+            metrics=outcome.metrics,
+        )
+
+    try:
+        group = Group(to_group or "")
+    except ValueError:
+        logger.warning("Неизвестная группа с экрана: %r", to_group)
+        return outcome
+    return AssistantOutcome(
+        kind=IntentKind.SEND_GROUP,
+        query_text=outcome.query_text,
+        payload=payload,
+        group=group,
+        metrics=outcome.metrics,
+    )
 
 
 async def _forward_to_colleagues(

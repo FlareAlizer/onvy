@@ -18,6 +18,7 @@ import type {
   KnowledgeSourceFile,
   Kpi,
   ManagerFocus,
+  Role,
   SalesPoint,
   Test,
 } from './types';
@@ -150,6 +151,16 @@ interface StoreValue {
 const StoreContext = createContext<StoreValue | null>(null);
 
 /**
+ * Настоящая сессия платформы (см. frontend/src/lib/api.ts), в объёме,
+ * который нужен этому демо-хранилищу, чтобы найти в себе подходящего
+ * человека — см. StoreProvider ниже.
+ */
+export interface PlatformIdentity {
+  role: Role;
+  name: string;
+}
+
+/**
  * Пригодны ли сохранённые данные к показу.
  *
  * Внутри платформы консоль открывается сразу, минуя её собственную регистрацию,
@@ -161,15 +172,56 @@ function usable(data: AppData | null): data is AppData {
   return Boolean(data && Array.isArray(data.employees) && data.employees.length > 0);
 }
 
-export function StoreProvider({ children }: { children: ReactNode }) {
+export function StoreProvider({
+  children,
+  identity = null,
+}: {
+  children: ReactNode;
+  /**
+   * Настоящий вошедший платформы (роль + имя). Когда задан, консоль подставляет
+   * его вместо своей собственной регистрации/входа — см. identityAccount ниже.
+   */
+  identity?: PlatformIdentity | null;
+}) {
   const [data, setData] = useState<AppData>(() => {
     const saved = load<AppData | null>(DATA_KEY, null);
     return usable(saved) ? saved : makeSpace(DEFAULT_SPACE);
   });
-  const [session, setSession] = useState<Account | null>(() => load<Account | null>(SESSION_KEY, null));
+  // "Свой" вход консоли — её собственные login/logout/registerEmployee, как и раньше.
+  // Внутри платформы он почти всегда пуст: настоящий человек приходит через identity,
+  // а не через эту форму. Оставлен отдельно от эффективной session ниже, чтобы
+  // logout()/resetDemo() не роняли платформенного пользователя в null навсегда.
+  const [ownSession, setSession] = useState<Account | null>(() => load<Account | null>(SESSION_KEY, null));
 
   useEffect(() => save(DATA_KEY, data), [data]);
-  useEffect(() => save(SESSION_KEY, session), [session]);
+  useEffect(() => save(SESSION_KEY, ownSession), [ownSession]);
+
+  /**
+   * Мостик к настоящей сессии платформы.
+   *
+   * Эта консоль — перенесённый модуль со своим демо-хранилищем: сотрудника
+   * с id из настоящей БД платформы в data.employees нет и не появится, пока
+   * её экраны не подключат к реальному API (отдельная задача). Поэтому
+   * вошедшего привязываем к первому демо-аккаунту подходящей роли —
+   * единственно ради того, чтобы `me` находился и экраны не были пустыми.
+   * Имя берём настоящее, но вся статистика на экранах ниже — демонстрационная,
+   * относится к демо-сотруднику, а не к тому, кто реально вошёл.
+   */
+  const identityAccount = useMemo<Account | null>(() => {
+    if (!identity) return null;
+    const template =
+      data.accounts.find((a) => a.role === identity.role) ??
+      data.accounts.find((a) => a.role === 'employee') ??
+      data.accounts[0] ??
+      null;
+    if (!template) return null;
+    return { ...template, name: identity.name };
+  }, [identity, data.accounts]);
+
+  // Эффективная сессия: свой вход консоли — если он есть, иначе платформенный
+  // мостик. Так logout()/resetDemo() (они чистят только ownSession) не оставляют
+  // платформенного пользователя без сессии — она просто пересобирается из identity.
+  const session = ownSession ?? identityAccount;
 
   const profile = useMemo(() => getProfile(data.company?.industry), [data.company?.industry]);
 
