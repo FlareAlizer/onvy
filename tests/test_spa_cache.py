@@ -1,0 +1,82 @@
+"""Кэширование собранного приложения.
+
+Тесты появились после вопроса владельца «а ты новую версию выкатил?»: заголовков
+кэша не было вообще, и браузер сам решал, сколько держать index.html. Решение
+браузера здесь — это белый экран посреди смены: индекс указывает на файлы сборки
+по именам, старые после выката удаляются, и телефон со старым индексом просит
+файл, которого больше нет. Официанту в зале это объяснить нечем.
+"""
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from app.main import mount_spa
+
+БАНДЛ = "index-TESTHASH.js"
+
+
+def приложение(tmp_path):
+    """Собранное приложение на диске: индекс и один файл сборки."""
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (assets / БАНДЛ).write_text("console.log('онви')", encoding="utf-8")
+    (tmp_path / "index.html").write_text(
+        f'<!doctype html><script src="/assets/{БАНДЛ}"></script>', encoding="utf-8"
+    )
+
+    app = FastAPI()
+    mount_spa(app, tmp_path)
+    return TestClient(app)
+
+
+class TestИндекс:
+    def test_перечитывается_всегда(self, tmp_path):
+        """Иначе выкат не доедет до телефона, который уже открывал приложение."""
+        клиент = приложение(tmp_path)
+
+        ответ = клиент.get("/")
+
+        assert ответ.headers["cache-control"] == "no-cache"
+
+    def test_внутренние_ссылки_тоже(self, tmp_path):
+        """Официант открывает приложение по прямой ссылке — правило то же."""
+        клиент = приложение(tmp_path)
+
+        ответ = клиент.get("/shift")
+
+        assert ответ.headers["cache-control"] == "no-cache"
+
+    def test_указывает_на_текущую_сборку(self, tmp_path):
+        """Смысл всей затеи: индекс приходит с сервера и ведёт на свежие файлы.
+
+        Полная перекачка при каждом открытии здесь осознанна — индекс весит
+        около полукилобайта, а вся тяжёлая часть лежит в кэше навсегда.
+        """
+        клиент = приложение(tmp_path)
+
+        ответ = клиент.get("/")
+
+        assert ответ.status_code == 200
+        assert БАНДЛ in ответ.text
+        assert len(ответ.content) < 4096
+
+
+class TestФайлыСборки:
+    def test_кэшируются_навсегда(self, tmp_path):
+        """Имя файла содержит хеш содержимого — перезапрашивать нечего."""
+        клиент = приложение(tmp_path)
+
+        ответ = клиент.get(f"/assets/{БАНДЛ}")
+
+        assert ответ.status_code == 200
+        assert "immutable" in ответ.headers["cache-control"]
+        assert "max-age=31536000" in ответ.headers["cache-control"]
+
+    def test_несуществующий_файл_не_подменяется_индексом(self, tmp_path):
+        """Пропавший файл сборки должен быть честным 404, а не HTML-страницей:
+        иначе браузер попытается исполнить разметку как скрипт."""
+        клиент = приложение(tmp_path)
+
+        ответ = клиент.get("/assets/index-СТАРЫЙ.js")
+
+        assert ответ.status_code == 404

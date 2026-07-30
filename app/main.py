@@ -87,19 +87,41 @@ async def health() -> dict[str, object]:
     }
 
 
-# SPA официанта и управляющего. Прямые ссылки внутри приложения отдаём индексу,
-# чтобы работала навигация, а /api и /ws остаются за приложением.
-if FRONTEND_DIST.exists():
+# SPA официанта и управляющего.
+def mount_spa(app: FastAPI, dist: Path) -> None:
+    """Отдавать собранное приложение официанта и управляющего.
+
+    Кэширование здесь не украшение, а защита от белого экрана в смене. Файлы
+    сборки названы по содержимому (`index-CaCrevax.js`), поэтому кэшируются
+    навсегда: другое содержимое — другое имя. А `index.html` указывает на эти
+    имена, и старые файлы после выката удаляются, — телефон, закэшировавший его
+    надолго, запросил бы несуществующий файл и показал белый экран посреди
+    смены, без возможности объяснить официанту, что нажать. Поэтому индекс
+    берётся с сервера при каждом открытии — он весит около полукилобайта, и
+    экономить на нём нечего, а вся тяжёлая часть лежит в кэше навсегда.
+    """
     from fastapi.staticfiles import StaticFiles
 
-    app.mount(
-        "/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="spa-assets"
-    )
+    class ImmutableAssets(StaticFiles):
+        async def get_response(self, path: str, scope):  # type: ignore[override]
+            response = await super().get_response(path, scope)
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            return response
+
+    app.mount("/assets", ImmutableAssets(directory=dist / "assets"), name="spa-assets")
+
+    index_headers = {"Cache-Control": "no-cache"}
 
     @app.get("/", include_in_schema=False)
     async def index() -> FileResponse:
-        return FileResponse(FRONTEND_DIST / "index.html")
+        return FileResponse(dist / "index.html", headers=index_headers)
 
+    # Прямые ссылки внутри приложения отдаём индексу, чтобы работала навигация,
+    # а /api и /ws остаются за приложением — они объявлены выше.
     @app.get("/{path:path}", include_in_schema=False)
     async def spa(path: str) -> FileResponse:
-        return FileResponse(FRONTEND_DIST / "index.html")
+        return FileResponse(dist / "index.html", headers=index_headers)
+
+
+if FRONTEND_DIST.exists():
+    mount_spa(app, FRONTEND_DIST)
