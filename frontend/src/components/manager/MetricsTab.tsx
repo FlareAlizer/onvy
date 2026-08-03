@@ -1,31 +1,34 @@
-// Метрики пилота (spec S6): Δ среднего чека, Δ скорости обслуживания, латентность
-// стека, выгрузка CSV для инвестраунда.
+// Метрики пилота (spec S6): сколько спрашивали ассистента, как часто он находил
+// ответ, сколько времени это занимало, сколько реплик прошло по рации.
 //
-// Честная оговорка (см. отчёт агента): на момент написания этого экрана
-// бэкенд ещё не отдаёт ни одного из этих чисел — day-план спеки (§3) относит
-// замер латентности и телеметрию пилота на 30 июля. Экран написан против
-// разумного контракта:
-//   GET /api/venues/{id}/metrics/summary  -> MetricsSummary (ниже)
-//   GET /api/venues/{id}/metrics/export.csv -> файл
-// и явно отличает "эндпоинт ещё не готов" (404) от настоящей ошибки сети —
-// как только бэкенд реализует эти два роута, вкладка заработает без правок.
+// Экран когда-то был написан против придуманного контракта — с Δ среднего чека и
+// поэтапной латентностью, — которого бэкенд так и не реализовал. Поля приходили
+// undefined, и `.toFixed` ронял всё приложение в белый экран: падала не вкладка,
+// а весь кабинет. Теперь типы повторяют app/schemas/insights.py: MetricsSummary.
+//
+// Среднего чека здесь нет и не будет до интеграции с учётной системой — её в
+// пилот не берём, а выдумывать цифру нельзя.
 
 import { useEffect, useState } from 'react';
-import { BarChart3, Download, HelpCircle } from 'lucide-react';
-import { ApiError, api, getSession } from '../../lib/api';
+import { BarChart3, Download } from 'lucide-react';
+import { api, getSession } from '../../lib/api';
 import { LoadingState, ErrorState } from '../StateView';
 
+/** Ровно то, что отдаёт GET /venues/{id}/metrics/summary. */
 type MetricsSummary = {
-  since: string;
-  avg_check_delta_percent: number | null;
-  service_speed_delta_percent: number | null;
-  assistant_queries_total: number;
-  assistant_hit_rate: number;
+  days: number;
+  assistant_queries: number;
+  assistant_answered: number;
+  assistant_missed: number;
+  /** Пусто, когда данных за период ещё нет — это честнее нуля. */
+  median_ms: number | null;
+  p95_ms: number | null;
+  utterances: number;
+  translated: number;
   translation_failures: number;
-  stage_latency_ms: { asr: number; search: number; answer: number; tts: number; total: number };
 };
 
-type Status = 'loading' | 'ready' | 'not-ready' | 'error';
+type Status = 'loading' | 'ready' | 'error';
 
 export default function MetricsTab() {
   const venueId = getSession()?.venueId;
@@ -41,7 +44,7 @@ export default function MetricsTab() {
         setData(d);
         setStatus('ready');
       })
-      .catch((e) => setStatus(e instanceof ApiError && e.status === 404 ? 'not-ready' : 'error'));
+      .catch(() => setStatus('error'));
   };
 
   useEffect(load, [venueId]);
@@ -71,49 +74,77 @@ export default function MetricsTab() {
   if (status === 'error')
     return <ErrorState message="Не удалось загрузить метрики. Проверьте вайфай." onRetry={load} />;
 
-  if (status === 'not-ready') {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
-        <div className="flex h-14 w-14 items-center justify-center rounded-full bg-stone-800 text-stone-400">
-          <HelpCircle size={26} />
-        </div>
-        <h3 className="text-lg font-semibold text-stone-100">Метрики пока не готовы</h3>
-        <p className="max-w-xs text-sm leading-relaxed text-stone-400">
-          Замер латентности и телеметрия пилота появятся ближе к 30 июля. Экран уже готов
-          показать цифры, как только бэкенд отдаст `GET /venues/{'{id}'}/metrics/summary`.
-        </p>
-      </div>
-    );
-  }
-
   if (!data) return null;
+
+  const пустаяСводка = data.assistant_queries === 0 && data.utterances === 0;
+  const доляОтветов =
+    data.assistant_queries > 0
+      ? Math.round((data.assistant_answered / data.assistant_queries) * 100)
+      : null;
 
   return (
     <div className="flex h-full flex-col gap-5 overflow-y-auto px-5 pt-4 pb-6">
-      <div className="flex items-center justify-between">
+      <div>
         <h2 className="flex items-center gap-2 text-xl font-bold tracking-tight text-stone-50">
           <BarChart3 size={22} /> Метрики пилота
         </h2>
+        <p className="mt-1 text-sm text-stone-500">За последние {data.days} дн.</p>
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
-        <Stat label="Δ средний чек" value={formatDelta(data.avg_check_delta_percent)} />
-        <Stat label="Δ скорость обслуживания" value={formatDelta(data.service_speed_delta_percent)} />
-        <Stat label="Вопросов ассистенту" value={String(data.assistant_queries_total)} />
-        <Stat label="Ответ найден" value={`${Math.round(data.assistant_hit_rate * 100)}%`} />
-      </div>
-
-      <div className="rounded-2xl bg-stone-900 p-5">
-        <h3 className="mb-3 text-sm font-bold uppercase tracking-widest text-stone-500">
-          Латентность стека, p95
-        </h3>
-        <div className="space-y-2">
-          <LatencyRow label="Запись + ASR" ms={data.stage_latency_ms.asr} budgetMs={1100} />
-          <LatencyRow label="Поиск / ответ" ms={data.stage_latency_ms.search + data.stage_latency_ms.answer} budgetMs={800} />
-          <LatencyRow label="Озвучка" ms={data.stage_latency_ms.tts} budgetMs={600} />
-          <LatencyRow label="Итого" ms={data.stage_latency_ms.total} budgetMs={2500} strong />
+      {пустаяСводка ? (
+        <div className="rounded-2xl bg-stone-900 p-5">
+          <p className="text-base font-semibold text-stone-200">Данных за период нет</p>
+          <p className="mt-1.5 text-sm leading-relaxed text-stone-400">
+            Цифры появятся после первых смен: считаются вопросы к ассистенту, реплики по рации
+            и время ответа. Придуманных значений здесь не будет.
+          </p>
         </div>
-      </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-3">
+            <Stat label="Вопросов ассистенту" value={String(data.assistant_queries)} />
+            <Stat
+              label="Ответ нашёлся"
+              value={доляОтветов === null ? '—' : `${доляОтветов}%`}
+            />
+            <Stat label="Реплик по рации" value={String(data.utterances)} />
+            <Stat label="С переводом" value={String(data.translated)} />
+          </div>
+
+          <div className="rounded-2xl bg-stone-900 p-5">
+            <h3 className="mb-3 text-sm font-bold uppercase tracking-widest text-stone-500">
+              Время ответа
+            </h3>
+            <div className="space-y-2">
+              <LatencyRow label="Медиана" ms={data.median_ms} budgetMs={2500} />
+              <LatencyRow label="95-й процентиль" ms={data.p95_ms} budgetMs={2500} strong />
+            </div>
+            <p className="mt-3 text-xs leading-relaxed text-stone-500">
+              Бюджет по спеке — 2.5 секунды. Среднее не показываем: один зависший запрос
+              перекашивает его целиком.
+            </p>
+          </div>
+
+          {data.assistant_missed > 0 && (
+            <div className="rounded-2xl bg-stone-900 p-5">
+              <p className="text-base font-semibold text-stone-200">
+                Не нашлось ответа: {data.assistant_missed}
+              </p>
+              <p className="mt-1.5 text-sm leading-relaxed text-stone-400">
+                Это не сбой, а подсказка: столько раз спросили то, чего нет в меню или что
+                записано другими словами.
+              </p>
+            </div>
+          )}
+
+          {data.translation_failures > 0 && (
+            <p className="text-sm text-amber-300">
+              Перевод не сработал {data.translation_failures} раз — реплики доставлены на языке
+              отправителя.
+            </p>
+          )}
+        </>
+      )}
 
       <button
         onClick={downloadCsv}
@@ -126,12 +157,6 @@ export default function MetricsTab() {
   );
 }
 
-function formatDelta(value: number | null): string {
-  if (value === null) return '—';
-  const sign = value > 0 ? '+' : '';
-  return `${sign}${value.toFixed(1)}%`;
-}
-
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-2xl bg-stone-900 p-4">
@@ -141,13 +166,28 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function LatencyRow({ label, ms, budgetMs, strong }: { label: string; ms: number; budgetMs: number; strong?: boolean }) {
-  const overBudget = ms > budgetMs;
+function LatencyRow({
+  label,
+  ms,
+  budgetMs,
+  strong,
+}: {
+  label: string;
+  /** Пусто, когда замеров за период не было. */
+  ms: number | null;
+  budgetMs: number;
+  strong?: boolean;
+}) {
+  const overBudget = ms !== null && ms > budgetMs;
   return (
     <div className="flex items-center justify-between">
       <span className={`text-sm ${strong ? 'font-semibold text-stone-200' : 'text-stone-400'}`}>{label}</span>
-      <span className={`font-mono text-sm font-bold ${overBudget ? 'text-amber-300' : 'text-emerald-300'}`}>
-        {ms} мс
+      <span
+        className={`font-mono text-sm font-bold ${
+          ms === null ? 'text-stone-500' : overBudget ? 'text-amber-300' : 'text-emerald-300'
+        }`}
+      >
+        {ms === null ? '—' : `${ms} мс`}
       </span>
     </div>
   );
