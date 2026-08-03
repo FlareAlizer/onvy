@@ -8,7 +8,7 @@
 // Ловим их через mediaSession: официант жмёт кнопку на проводе, телефон остаётся
 // в кармане. Это основной способ работы на пилоте, экран — запасной.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ChevronDown,
@@ -25,12 +25,11 @@ import {
   api,
   getSession,
   logoutSession,
-  openCommsSocket,
   playAudio,
   sendVoice,
-  type IncomingMessage,
   type VoiceResult,
 } from '../lib/api';
+import { useComms } from '../lib/comms';
 import { startRecording, stopRecording } from '../lib/recorder';
 import PersonPicker from '../components/PersonPicker';
 
@@ -71,6 +70,8 @@ type FeedItem = {
   title: string;
   text: string;
   warning?: string;
+  /** Когда появилось — по нему свои реплики и входящие сливаются в одну ленту. */
+  at: number;
 };
 
 const DEGRADED_TEXT: Record<string, string> = {
@@ -87,10 +88,14 @@ type Props = {
 export default function WaiterView({ onExit }: Props = {}) {
   const session = getSession();
   const [phase, setPhase] = useState<Phase>('idle');
-  const [online, setOnline] = useState(false);
-  const [feed, setFeed] = useState<FeedItem[]>([]);
+  // Канал рации держит App.tsx: он обязан пережить уход в другой раздел кабинета,
+  // иначе официант молча выпадает со смены — см. lib/comms.tsx.
+  const { status, feed: входящие } = useComms();
+  const online = status === 'online';
+  // Свои реплики — ответы ассистента и отправленное. Входящие сюда не кладём:
+  // они приходят из провайдера и живут дольше этого экрана.
+  const [собственные, setСобственные] = useState<FeedItem[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const socketRef = useRef<WebSocket | null>(null);
   const phaseRef = useRef<Phase>('idle');
 
   // Выбор адресата пальцем и отправка текстом — запасной путь для того же
@@ -102,9 +107,30 @@ export default function WaiterView({ onExit }: Props = {}) {
 
   phaseRef.current = phase;
 
-  const push = useCallback((item: Omit<FeedItem, 'id'>) => {
-    setFeed((current) => [{ ...item, id: crypto.randomUUID() }, ...current].slice(0, 12));
+  const push = useCallback((item: Omit<FeedItem, 'id' | 'at'>) => {
+    setСобственные((current) =>
+      [{ ...item, id: crypto.randomUUID(), at: Date.now() }, ...current].slice(0, 12),
+    );
   }, []);
+
+  // Одна лента на экране: свои реплики и входящие из рации, новые сверху.
+  const feed = useMemo<FeedItem[]>(
+    () =>
+      [
+        ...собственные,
+        ...входящие.map((m) => ({
+          id: m.id,
+          kind: 'incoming' as const,
+          title: m.from_name,
+          text: m.text,
+          warning: m.translation_failed ? 'Перевод не сработал' : undefined,
+          at: m.at,
+        })),
+      ]
+        .sort((a, b) => b.at - a.at)
+        .slice(0, 12),
+    [собственные, входящие],
+  );
 
   const отправитьТекстом = async () => {
     const сообщение = текст.trim();
@@ -144,58 +170,6 @@ export default function WaiterView({ onExit }: Props = {}) {
       setОтправка(false);
     }
   };
-
-  // --- Канал рации -------------------------------------------------------
-  useEffect(() => {
-    let cancelled = false;
-    let socket: WebSocket | null = null;
-    let ping: number | undefined;
-    let retry: number | undefined;
-
-    const connect = async () => {
-      try {
-        socket = await openCommsSocket();
-      } catch {
-        // Вайфай чайханы моргает — пробуем снова, молча.
-        retry = window.setTimeout(connect, 3000);
-        return;
-      }
-      if (cancelled) {
-        socket.close();
-        return;
-      }
-      socketRef.current = socket;
-
-      socket.onopen = () => {
-        setOnline(true);
-        // Подтверждаем, что на смене, чаще, чем истекает отметка присутствия.
-        ping = window.setInterval(() => socket?.send('ping'), 20000);
-      };
-      socket.onmessage = (event) => {
-        const message = JSON.parse(event.data) as IncomingMessage;
-        push({
-          kind: 'incoming',
-          title: message.from_name,
-          text: message.text,
-          warning: message.translation_failed ? 'Перевод не сработал' : undefined,
-        });
-        if (message.audio_base64) void playAudio(message.audio_base64, message.mime_type);
-      };
-      socket.onclose = () => {
-        setOnline(false);
-        window.clearInterval(ping);
-        if (!cancelled) retry = window.setTimeout(connect, 3000);
-      };
-    };
-
-    void connect();
-    return () => {
-      cancelled = true;
-      window.clearInterval(ping);
-      window.clearTimeout(retry);
-      socket?.close();
-    };
-  }, [push]);
 
   // --- Кнопка ------------------------------------------------------------
   const begin = useCallback(async () => {
