@@ -19,7 +19,7 @@ import { DialogDetail } from '../../components/DialogDetail';
 import { lastDays, money, num, pct, plural, times } from '../../lib/format';
 import { employeeMetric, formatMetric, kpiProgress, kpiReached } from '../../lib/metrics';
 import { findMetric } from '../../industryProfiles';
-import { PERIOD_LABEL } from '../../demo/shared';
+import { PERIOD_LABEL } from '../../emptyState';
 import type { Dialog, Employee, KpiPeriod } from '../../types';
 
 function KpiDialog({
@@ -231,7 +231,7 @@ function EmployeeProfile({ employee, onBack }: { employee: Employee; onBack: () 
         <StatTile
           label="Выручка за месяц"
           value={money(employee.stats.revenue, true)}
-          hint="демо-данные · учётная система"
+          hint="нет источника · нужна учётная система"
           spark={employee.daily}
         />
         <StatTile
@@ -250,7 +250,7 @@ function EmployeeProfile({ employee, onBack }: { employee: Employee; onBack: () 
       <section className="mt-4 grid gap-4 lg:grid-cols-[1.5fr_1fr]">
         <ChartCard
           title="Выручка по дням"
-          hint="Последние две недели · демо-данные"
+          hint="Последние две недели · нет источника"
           table={{ head: ['День', 'Выручка, ₽'], rows: labels.map((l, i) => [l, num(employee.daily[i] ?? 0)]) }}
         >
           <TrendChart
@@ -638,8 +638,9 @@ export default function Staff() {
           </Card>
 
           <p className="mt-3 text-[12px] text-muted">
-            Выручка, чек и количество {L.outcomePlural.toLowerCase()} — демо-данные, требуется интеграция
-            с учётной системой. Качество разговоров, обучение и бейджи Onvy измеряет напрямую.
+            Выручка, чек и количество {L.outcomePlural.toLowerCase()} источника не имеют — нужна
+            интеграция с учётной системой, в пилот она не входит. Качество разговоров, обучение и
+            связь Onvy измеряет сам.
           </p>
 
           <KpiDialog open={bulkOpen} onClose={() => setBulkOpen(false)} targets={list} />

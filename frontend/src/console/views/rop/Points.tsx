@@ -197,7 +197,7 @@ export default function Points() {
             <StatTile
               label="Выполнение плана"
               value={pct((totalRevenue / (totalPlan || 1)) * 100, 0)}
-              hint="демо-данные · учётная система"
+              hint="нет источника · нужна учётная система"
             />
             <StatTile
               label={L.interactionPlural}
@@ -209,7 +209,7 @@ export default function Points() {
           <section className="mt-4 grid gap-4 lg:grid-cols-2">
             <ChartCard
               title={`Выручка: ${L.locationPlural.toLowerCase()}`}
-              hint="За текущий месяц · демо-данные"
+              hint="За текущий месяц · нет источника"
               table={{
                 head: [L.location, 'Выручка, ₽', 'План, ₽'],
                 rows: ranked.map((p) => [p.name, num(p.revenue), num(p.plan)]),

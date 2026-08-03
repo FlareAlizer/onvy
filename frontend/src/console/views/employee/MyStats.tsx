@@ -1,14 +1,11 @@
-﻿import { useState } from 'react';
-import {
+﻿import {
   Award,
   BookOpen,
   Flame,
   Gauge,
   GraduationCap,
   HandHelping,
-  Loader2,
   MessageSquareQuote,
-  Play,
   Target,
   TrendingUp,
 } from 'lucide-react';
@@ -21,12 +18,10 @@ import CountUp from '../../components/CountUp';
 import { lastDays, money, num, pct, plural, times } from '../../lib/format';
 import { employeeMetric, formatMetric, kpiProgress, kpiReached } from '../../lib/metrics';
 import { findMetric } from '../../industryProfiles';
-import { PERIOD_LABEL } from '../../demo/shared';
+import { PERIOD_LABEL } from '../../emptyState';
 
 export default function MyStats({ onOpenTraining }: { onOpenTraining: () => void }) {
-  const { me, data, profile, runDemoDialog } = useStore();
-  const [running, setRunning] = useState(false);
-  const [recorded, setRecorded] = useState(false);
+  const { me, data, profile } = useStore();
   const L = profile.labels;
 
   if (!me) return null;
@@ -48,17 +43,6 @@ export default function MyStats({ onOpenTraining }: { onOpenTraining: () => void
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     .slice(0, 3);
 
-  const startDemo = () => {
-    setRunning(true);
-    // Симуляция записи диалога — реального распознавания речи нет.
-    setTimeout(() => {
-      runDemoDialog();
-      setRunning(false);
-      setRecorded(true);
-      setTimeout(() => setRecorded(false), 5000);
-    }, 1800);
-  };
-
   return (
     <>
       <PageHead
@@ -76,23 +60,9 @@ export default function MyStats({ onOpenTraining }: { onOpenTraining: () => void
             <Chip tone="neutral" icon={<Flame size={12} />}>
               {num(me.xp)} XP
             </Chip>
-            <button type="button" className="btn-ghost" onClick={startDemo} disabled={running}>
-              {running ? <Loader2 size={15} className="animate-spin" /> : <Play size={15} />}
-              {running ? 'Идёт запись…' : 'Запустить демо-диалог'}
-            </button>
           </div>
         }
       />
-
-      {recorded && (
-        <div className="mb-4 flex items-start gap-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3.5">
-          <MessageSquareQuote size={16} className="mt-0.5 shrink-0 text-emerald-600" />
-          <p className="text-[13px] leading-relaxed text-emerald-900">
-            Демо-{L.interaction.toLowerCase()} записано и разобрано. Оно появилось в разделе «Диалоги» и
-            в аналитике руководителя.
-          </p>
-        </div>
-      )}
 
       <EmployeeBadgePanel />
 
@@ -101,13 +71,7 @@ export default function MyStats({ onOpenTraining }: { onOpenTraining: () => void
           <EmptyState
             icon={<Gauge size={22} />}
             title="Статистика появится после первой смены"
-            hint={`Подключите бейдж и начните смену. Можно и не ждать — нажмите «Запустить демо-диалог», чтобы увидеть, как выглядит разбор.`}
-            action={
-              <button type="button" className="console-btn-primary" onClick={startDemo} disabled={running}>
-                {running ? <Loader2 size={15} className="animate-spin" /> : <Play size={15} />}
-                Запустить демо-диалог
-              </button>
-            }
+            hint="Возьмите телефон с гарнитурой и выходите в зал. Цифры считаются по настоящим сменам — придуманных здесь не будет."
           />
         </div>
       ) : (
@@ -173,7 +137,7 @@ export default function MyStats({ onOpenTraining }: { onOpenTraining: () => void
               <StatTile
                 label="Выручка"
                 value={<CountUp to={me.stats.revenue / 1_000_000} decimals={1} suffix=" млн ₽" />}
-                hint="демо-данные · нужна учётная система"
+                hint="нет источника · нужна учётная система"
                 spark={me.daily}
               />
               <StatTile
@@ -184,7 +148,7 @@ export default function MyStats({ onOpenTraining }: { onOpenTraining: () => void
               <StatTile
                 label="Средний чек"
                 value={<CountUp to={me.stats.avgCheck} suffix=" ₽" />}
-                hint="демо-данные · нужна учётная система"
+                hint="нет источника · нужна учётная система"
               />
               <StatTile
                 label="Результативность"
@@ -198,7 +162,7 @@ export default function MyStats({ onOpenTraining }: { onOpenTraining: () => void
           <section className="mt-4 grid gap-4 lg:grid-cols-[1.55fr_1fr]">
             <ChartCard
               title="Выручка по дням"
-              hint="Последние две недели · демо-данные"
+              hint="Последние две недели · нет источника"
               table={{ head: ['День', 'Выручка, ₽'], rows: labels.map((l, i) => [l, num(me.daily[i] ?? 0)]) }}
             >
               <TrendChart

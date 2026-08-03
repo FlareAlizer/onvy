@@ -8,24 +8,16 @@ import {
   type ReactNode,
 } from 'react';
 import { logoutSession } from '../lib/api';
-import { DEFAULT_SPACE, emptyData, makeDemoDialog, makeSpace } from './demo';
+import { accountFromSession, emptyData, meFromSession } from './emptyState';
 import { getProfile, type IndustryProfile } from './industryProfiles';
-import type {
-  Account,
-  AppData,
-  Company,
-  Employee,
-  IndustryKey,
-  KnowledgeSourceFile,
-  Kpi,
-  ManagerFocus,
-  Role,
-  SalesPoint,
-  Test,
-} from './types';
+import type { Account, AppData, Employee, Kpi, ManagerFocus, Role, Test } from './types';
 
-const DATA_KEY = 'onvy.data.v2';
-const SESSION_KEY = 'onvy.session.v2';
+// Версия ключа поднята намеренно: у всех, кто открывал кабинет раньше, в браузере
+// лежит демо-пространство с выдуманными цифрами. Со старым ключом оно бы
+// подгрузилось снова и «чистая картина» не наступила бы ни у кого, кроме тех,
+// кто вручную чистит localStorage.
+const DATA_KEY = 'onvy.data.v3';
+const SESSION_KEY = 'onvy.session.v3';
 
 function load<T>(key: string, fallback: T): T {
   try {
@@ -77,48 +69,6 @@ export const FOCUS_META: Record<
   },
 };
 
-const FOCUS_TITLE: Record<ManagerFocus, string> = {
-  culture: FOCUS_META.culture.title,
-  operations: FOCUS_META.operations.title,
-  sales: FOCUS_META.sales.title,
-};
-
-export interface PointDraft {
-  name: string;
-  city: string;
-  address: string;
-  zones: string;
-  manager: string;
-  staffCount: string;
-}
-
-export interface CompanySignup {
-  companyName: string;
-  industry: IndustryKey;
-  staffSize: string;
-  pointsPlanned: string;
-  city: string;
-  points: PointDraft[];
-  knowledgeFiles: KnowledgeSourceFile[];
-  /** Приоритет руководителя — меняет порядок блоков в его кабинете. */
-  focus: ManagerFocus;
-  pilotGoals: string[];
-  ropName: string;
-  ropEmail: string;
-  ropPassword: string;
-}
-
-export interface EmployeeSignup {
-  joinCode: string;
-  name: string;
-  email: string;
-  password: string;
-  position: string;
-  pointId: string;
-}
-
-type Result = { ok: true } | { ok: false; error: string };
-type CompanyResult = { ok: true; joinCode: string } | { ok: false; error: string };
 
 interface StoreValue {
   data: AppData;
@@ -126,51 +76,29 @@ interface StoreValue {
   profile: IndustryProfile;
   session: Account | null;
   me: Employee | null;
-  login: (email: string, password: string) => Result;
   logout: () => void;
-  /** Сессию не открывает: РОП сначала должен увидеть код для сотрудников. */
-  registerCompany: (input: CompanySignup) => CompanyResult;
-  registerEmployee: (input: EmployeeSignup) => Result;
-  findCompanyByCode: (code: string) => { company: Company; points: SalesPoint[] } | null;
   setKpi: (kpi: Omit<Kpi, 'id'>) => void;
   removeKpi: (id: string) => void;
   addTest: (test: Omit<Test, 'id' | 'createdAt' | 'results'>) => Test;
   assignTest: (testId: string, employeeIds: string[]) => void;
   recordTestResult: (testId: string, employeeId: string, score: number) => void;
-  /** Записывает демо-диалог сотрудника — он сразу виден РОПу в аналитике. */
-  runDemoDialog: () => string | null;
   /** Приоритет текущего руководителя. */
   focus: ManagerFocus;
   setFocus: (f: ManagerFocus) => void;
   /** Превратить удачную практику в учебный материал. */
   promotePractice: (id: string) => void;
-  /** Переключение готового демо-пространства. */
-  switchSpace: (key: string) => void;
-  resetDemo: () => void;
 }
 
 const StoreContext = createContext<StoreValue | null>(null);
 
 /**
- * Настоящая сессия платформы (см. frontend/src/lib/api.ts), в объёме,
- * который нужен этому демо-хранилищу, чтобы найти в себе подходящего
- * человека — см. StoreProvider ниже.
+ * Настоящая сессия платформы (см. frontend/src/lib/api.ts) в объёме, который
+ * нужен кабинету, чтобы показать вошедшего.
  */
 export interface PlatformIdentity {
+  employeeId: number;
   role: Role;
   name: string;
-}
-
-/**
- * Пригодны ли сохранённые данные к показу.
- *
- * Внутри платформы консоль открывается сразу, минуя её собственную регистрацию,
- * поэтому пустое пространство здесь означает не «пользователь только начал»,
- * а мусор в localStorage от прежних заходов — и все разделы выглядят пустыми,
- * хотя ничего не сломано. В таком случае честнее показать демо-данные.
- */
-function usable(data: AppData | null): data is AppData {
-  return Boolean(data && Array.isArray(data.employees) && data.employees.length > 0);
 }
 
 export function StoreProvider({
@@ -178,228 +106,32 @@ export function StoreProvider({
   identity = null,
 }: {
   children: ReactNode;
-  /**
-   * Настоящий вошедший платформы (роль + имя). Когда задан, консоль подставляет
-   * его вместо своей собственной регистрации/входа — см. identityAccount ниже.
-   */
+  /** Настоящий вошедший платформы. Без него кабинет показывать некому. */
   identity?: PlatformIdentity | null;
 }) {
-  const [data, setData] = useState<AppData>(() => {
-    const saved = load<AppData | null>(DATA_KEY, null);
-    return usable(saved) ? saved : makeSpace(DEFAULT_SPACE);
-  });
-  // "Свой" вход консоли — её собственные login/logout/registerEmployee, как и раньше.
-  // Внутри платформы он почти всегда пуст: настоящий человек приходит через identity,
-  // а не через эту форму. Оставлен отдельно от эффективной session ниже, чтобы
-  // logout()/resetDemo() не роняли платформенного пользователя в null навсегда.
-  const [ownSession, setSession] = useState<Account | null>(() => load<Account | null>(SESSION_KEY, null));
+  // Данные кабинета. Начальное состояние — пустое: всё, что здесь появится,
+  // должно приехать из API платформы, а не из выдуманного набора.
+  const [data, setData] = useState<AppData>(() => load<AppData>(DATA_KEY, emptyData()));
 
   useEffect(() => save(DATA_KEY, data), [data]);
-  useEffect(() => save(SESSION_KEY, ownSession), [ownSession]);
 
-  /**
-   * Мостик к настоящей сессии платформы.
-   *
-   * Эта консоль — перенесённый модуль со своим демо-хранилищем: сотрудника
-   * с id из настоящей БД платформы в data.employees нет и не появится, пока
-   * её экраны не подключат к реальному API (отдельная задача). Поэтому
-   * вошедшего привязываем к первому демо-аккаунту подходящей роли —
-   * единственно ради того, чтобы `me` находился и экраны не были пустыми.
-   * Имя берём настоящее, но вся статистика на экранах ниже — демонстрационная,
-   * относится к демо-сотруднику, а не к тому, кто реально вошёл.
-   */
-  const identityAccount = useMemo<Account | null>(() => {
-    if (!identity) return null;
-    const template =
-      data.accounts.find((a) => a.role === identity.role) ??
-      data.accounts.find((a) => a.role === 'employee') ??
-      data.accounts[0] ??
-      null;
-    if (!template) return null;
-    return { ...template, name: identity.name };
-  }, [identity, data.accounts]);
-
-  // Эффективная сессия: свой вход консоли — если он есть, иначе платформенный
-  // мостик. Так logout()/resetDemo() (они чистят только ownSession) не оставляют
-  // платформенного пользователя без сессии — она просто пересобирается из identity.
-  const session = ownSession ?? identityAccount;
+  // Кто вошёл — берётся из настоящей сессии платформы, целиком. Своего входа у
+  // консоли больше нет: внутри продукта человек уже авторизован, и вторая форма
+  // логина была бы лишним экраном с чужими аккаунтами.
+  const session = useMemo<Account | null>(
+    () =>
+      identity
+        ? accountFromSession(identity.employeeId, identity.name, identity.role)
+        : null,
+    [identity],
+  );
 
   const profile = useMemo(() => getProfile(data.company?.industry), [data.company?.industry]);
 
-  const login = useCallback<StoreValue['login']>(
-    (email, password) => {
-      const account = data.accounts.find(
-        (a) => a.email.trim().toLowerCase() === email.trim().toLowerCase(),
-      );
-      if (!account) return { ok: false, error: 'Аккаунта с такой почтой нет' };
-      if (account.password !== password) return { ok: false, error: 'Неверный пароль' };
-      setSession(account);
-      return { ok: true };
-    },
-    [data.accounts],
-  );
+  // Выход из кабинета — это выход из платформы: гасим токен на сервере и
+  // возвращаемся на экран входа.
+  const logout = useCallback(() => void logoutSession(), []);
 
-  // Выход из кабинета — это выход из платформы, а не из демо-хранилища консоли.
-  // Раньше здесь стоял только setSession(null): он гасил внутренний вход
-  // консоли, после чего сессия тут же собиралась заново из платформенной, и
-  // кнопка «Выйти» не делала ничего. Чистим обе: свою — синхронно, платформенную
-  // — через logoutSession, который гасит токен на сервере и перезагружает вход.
-  const logout = useCallback(() => {
-    setSession(null);
-    void logoutSession();
-  }, []);
-
-  const findCompanyByCode = useCallback<StoreValue['findCompanyByCode']>(
-    (code) => {
-      const c = data.company;
-      if (!c || c.joinCode.trim().toLowerCase() !== code.trim().toLowerCase()) return null;
-      return { company: c, points: data.points };
-    },
-    [data.company, data.points],
-  );
-
-  const registerCompany = useCallback<StoreValue['registerCompany']>(
-    (input) => {
-      const email = input.ropEmail.trim().toLowerCase();
-      if (data.accounts.some((a) => a.email.toLowerCase() === email)) {
-        return { ok: false, error: 'Такая почта уже зарегистрирована' };
-      }
-      const companyId = uid('c');
-      const slug =
-        input.companyName
-          .toUpperCase()
-          .replace(/[^A-ZА-ЯЁ0-9]/gi, '')
-          .slice(0, 9) || 'ONVY';
-      const company: Company = {
-        id: companyId,
-        name: input.companyName,
-        industry: input.industry,
-        staffSize: input.staffSize,
-        pointsPlanned: input.pointsPlanned,
-        city: input.city,
-        joinCode: `${slug}-${new Date().getFullYear()}`,
-        createdAt: new Date().toISOString().slice(0, 10),
-      };
-      const points: SalesPoint[] = input.points
-        .filter((p) => p.name.trim())
-        .map((p) => ({
-          id: uid('p'),
-          name: p.name,
-          city: p.city || input.city,
-          address: p.address,
-          zones: p.zones
-            .split(',')
-            .map((z) => z.trim())
-            .filter(Boolean),
-          manager: p.manager,
-          staffCount: 0,
-          badgesOnline: 0,
-          plan: 0,
-          revenue: 0,
-          avgCheck: 0,
-          interactions: 0,
-          conversion: 0,
-          scriptCompliance: 0,
-          training: 0,
-          helpRequests: 0,
-          industry: {},
-        }));
-      const rop: Account = {
-        id: uid('a'),
-        role: 'rop',
-        name: input.ropName,
-        email,
-        password: input.ropPassword,
-        companyId,
-        position: FOCUS_TITLE[input.focus],
-        focus: input.focus,
-      };
-      setData({
-        ...emptyData(`custom:${input.industry}`),
-        company,
-        points,
-        accounts: [rop],
-        knowledgeFiles: input.knowledgeFiles,
-        pilot: {
-          startedAt: new Date().toISOString().slice(0, 10),
-          weeks: 6,
-          scope: `${points.length} · подключение сотрудников`,
-          goals: input.pilotGoals,
-          metrics: [],
-        },
-      });
-      return { ok: true, joinCode: company.joinCode };
-    },
-    [data.accounts],
-  );
-
-  const registerEmployee = useCallback<StoreValue['registerEmployee']>(
-    (input) => {
-      const company = data.company;
-      if (!company || company.joinCode.trim().toLowerCase() !== input.joinCode.trim().toLowerCase()) {
-        return { ok: false, error: 'Код компании не найден' };
-      }
-      const email = input.email.trim().toLowerCase();
-      if (data.accounts.some((a) => a.email.toLowerCase() === email)) {
-        return { ok: false, error: 'Такая почта уже зарегистрирована' };
-      }
-      const employeeId = uid('e');
-      const employee: Employee = {
-        id: employeeId,
-        name: input.name,
-        position: input.position,
-        pointId: input.pointId,
-        hiredAt: new Date().toISOString().slice(0, 10),
-        onboarding: 0,
-        level: 1,
-        xp: 0,
-        badgeOnline: false,
-        badgeBattery: 100,
-        micQuality: 0,
-        stats: {
-          revenue: 0,
-          deals: 0,
-          dialogs: 0,
-          avgCheck: 0,
-          conversion: 0,
-          scriptCompliance: 0,
-          responseSec: 0,
-          autonomy: 0,
-          helpRequests: 0,
-        },
-        industry: {},
-        daily: Array(14).fill(0),
-        topItems: [],
-        topRequests: [],
-        strengths: [],
-        growthAreas: [],
-        trainingDone: 0,
-        trainingTotal: data.tests.length,
-      };
-      const account: Account = {
-        id: uid('a'),
-        role: 'employee',
-        name: input.name,
-        email,
-        password: input.password,
-        companyId: company.id,
-        pointId: input.pointId,
-        position: input.position,
-        employeeId,
-      };
-      setData((d) => ({
-        ...d,
-        employees: [...d.employees, employee],
-        accounts: [...d.accounts, account],
-        points: d.points.map((p) =>
-          p.id === input.pointId ? { ...p, staffCount: p.staffCount + 1 } : p,
-        ),
-      }));
-      setSession(account);
-      return { ok: true };
-    },
-    [data.company, data.accounts, data.tests.length],
-  );
 
   const setKpi = useCallback<StoreValue['setKpi']>((kpi) => {
     setData((d) => {
@@ -463,45 +195,9 @@ export function StoreProvider({
     });
   }, []);
 
-  const runDemoDialog = useCallback<StoreValue['runDemoDialog']>(() => {
-    if (!session?.employeeId) return null;
-    const employee = data.employees.find((e) => e.id === session.employeeId);
-    if (!employee) return null;
-    const seq = data.dialogs.filter((d) => d.simulated).length + 1;
-    const dialog = makeDemoDialog(data.company?.industry ?? 'universal', employee, seq);
-    setData((d) => ({
-      ...d,
-      dialogs: [dialog, ...d.dialogs],
-      // Записанный диалог сразу попадает в счётчики сотрудника и точки.
-      employees: d.employees.map((e) =>
-        e.id === employee.id
-          ? {
-              ...e,
-              stats: {
-                ...e.stats,
-                dialogs: e.stats.dialogs + 1,
-                deals: e.stats.deals + 1,
-                revenue: e.stats.revenue + dialog.revenue,
-              },
-            }
-          : e,
-      ),
-      points: d.points.map((p) =>
-        p.id === employee.pointId ? { ...p, interactions: p.interactions + 1 } : p,
-      ),
-    }));
-    return dialog.id;
-  }, [session, data.employees, data.dialogs, data.company?.industry]);
-
-  const setFocus = useCallback<StoreValue['setFocus']>((f) => {
-    setSession((s) => (s && s.role === 'rop' ? { ...s, focus: f } : s));
-    setData((d) => ({
-      ...d,
-      accounts: d.accounts.map((a) =>
-        a.role === 'rop' ? { ...a, focus: f, position: FOCUS_TITLE[f] } : a,
-      ),
-    }));
-  }, []);
+  // Приоритет руководителя меняет только порядок разделов, данных не касается.
+  const [focus, setFocusState] = useState<ManagerFocus>('sales');
+  const setFocus = useCallback<StoreValue['setFocus']>((f) => setFocusState(f), []);
 
   const promotePractice = useCallback<StoreValue['promotePractice']>((id) => {
     setData((d) => ({
@@ -510,87 +206,48 @@ export function StoreProvider({
     }));
   }, []);
 
-  const switchSpace = useCallback<StoreValue['switchSpace']>((key) => {
-    setData(makeSpace(key));
-    setSession(null);
-  }, []);
-
-  const resetDemo = useCallback(() => {
-    setData((d) => makeSpace(d.space.startsWith('custom') ? DEFAULT_SPACE : d.space));
-    setSession(null);
-  }, []);
-
   /**
-   * Данные, как их видят экраны: демо-сотрудник, к которому привязан вошедший,
-   * носит его настоящее имя.
-   *
-   * Иначе имя раздваивалось: в рации и в шапке — настоящее (оно из сессии
-   * платформы), а на экранах кабинета — имя демо-сотрудника, и это читалось как
-   * вход под чужим аккаунтом. Подменяем на выдаче, а не в хранилище: цифры
-   * остаются демонстрационными и честно принадлежат демо-сотруднику.
+   * Карточка вошедшего. Собирается из настоящей сессии, а не ищется среди
+   * сотрудников кабинета: их список приходит из API платформы и на части экранов
+   * пока пуст. Раньше вошедшего подменяли демо-сотрудником — только чтобы `me`
+   * нашёлся и экраны не были белыми, — и вместе с ним приезжали чужие цифры.
    */
-  const visibleData = useMemo(() => {
-    const id = session?.employeeId;
-    const name = session?.name;
-    if (!id || !name) return data;
-    if (!data.employees.some((e) => e.id === id && e.name !== name)) return data;
-    return {
-      ...data,
-      employees: data.employees.map((e) => (e.id === id ? { ...e, name } : e)),
-    };
-  }, [data, session?.employeeId, session?.name]);
-
-  const me = useMemo(() => {
-    if (!session?.employeeId) return null;
-    return visibleData.employees.find((e) => e.id === session.employeeId) ?? null;
-  }, [session, visibleData.employees]);
-
-  const focus = session?.focus ?? data.accounts.find((a) => a.role === 'rop')?.focus ?? 'sales';
+  const me = useMemo<Employee | null>(() => {
+    if (!identity) return null;
+    const реальный = data.employees.find((e) => e.id === String(identity.employeeId));
+    return реальный ?? meFromSession(identity.employeeId, identity.name, identity.role);
+  }, [identity, data.employees]);
 
   const value = useMemo<StoreValue>(
     () => ({
-      data: visibleData,
+      data,
       profile,
       session,
       me,
       focus,
       setFocus,
       promotePractice,
-      login,
       logout,
-      registerCompany,
-      registerEmployee,
-      findCompanyByCode,
       setKpi,
       removeKpi,
       addTest,
       assignTest,
       recordTestResult,
-      runDemoDialog,
-      switchSpace,
-      resetDemo,
     }),
     [
-      visibleData,
+      data,
       profile,
       session,
       me,
       focus,
       setFocus,
       promotePractice,
-      login,
       logout,
-      registerCompany,
-      registerEmployee,
-      findCompanyByCode,
       setKpi,
       removeKpi,
       addTest,
       assignTest,
       recordTestResult,
-      runDemoDialog,
-      switchSpace,
-      resetDemo,
     ],
   );
 

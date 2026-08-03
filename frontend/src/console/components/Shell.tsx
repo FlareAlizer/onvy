@@ -1,5 +1,5 @@
 ﻿import { useEffect, useState, type ReactNode } from 'react';
-import { LogOut, Menu, RotateCcw, SlidersHorizontal, X, type LucideIcon } from 'lucide-react';
+import { LogOut, Menu, SlidersHorizontal, X, type LucideIcon } from 'lucide-react';
 import { Logo, OnvyMark } from './Logo';
 import { Avatar, Modal } from './ui';
 import { FOCUS_META, useStore } from '../store';
@@ -23,7 +23,7 @@ export function Shell({
   onNavigate: (id: string) => void;
   children: ReactNode;
 }) {
-  const { session, logout, data, resetDemo, focus, setFocus } = useStore();
+  const { session, logout, data, focus, setFocus } = useStore();
   const [drawer, setDrawer] = useState(false);
   const [focusOpen, setFocusOpen] = useState(false);
 
@@ -120,15 +120,6 @@ export function Shell({
       <div className="mt-1 flex gap-1">
         <button type="button" onClick={logout} className="btn-quiet flex-1 justify-start text-[13px]">
           <LogOut size={15} /> Выйти
-        </button>
-        <button
-          type="button"
-          onClick={resetDemo}
-          title="Сбросить демо-данные"
-          className="btn-quiet rounded-md p-2"
-        >
-          <RotateCcw size={15} />
-          <span className="sr-only">Сбросить демо-данные</span>
         </button>
       </div>
     </div>
