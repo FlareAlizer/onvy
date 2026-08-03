@@ -521,7 +521,10 @@ export const INDUSTRY_ORDER: IndustryKey[] = [
 ];
 
 export function getProfile(key: IndustryKey | undefined): IndustryProfile {
-  return INDUSTRY_PROFILES[key ?? 'universal'] ?? universal;
+  // По умолчанию — общепит: продукт делается для чайханы, и универсальный профиль
+  // называл официантов «консультантами», а зал — «торговой точкой». Термины из
+  // чужой отрасли на экране управляющего читаются как чужой продукт.
+  return INDUSTRY_PROFILES[key ?? 'horeca'] ?? horeca;
 }
 
 /** Найти определение метрики в профиле — ядро плюс отраслевые. */

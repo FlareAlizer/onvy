@@ -1,5 +1,5 @@
 ﻿import { useState } from 'react';
-import { ArrowLeft, Check, Copy, HandHelping, MapPin, Radio, Store, UserRound, Users } from 'lucide-react';
+import { ArrowLeft, HandHelping, MapPin, Radio, Store, UserRound, Users } from 'lucide-react';
 import { useStore } from '../../store';
 import { PageHead } from '../../components/Shell';
 import { Avatar, Card, Chip, EmptyState, Progress, SectionHead } from '../../components/ui';
@@ -131,7 +131,6 @@ function PointCard({ point, onBack }: { point: SalesPoint; onBack: () => void })
 export default function Points() {
   const { data, profile } = useStore();
   const L = profile.labels;
-  const [copied, setCopied] = useState(false);
   const [selected, setSelected] = useState<SalesPoint | null>(null);
   const { points, employees } = data;
 
@@ -145,45 +144,18 @@ export default function Points() {
   const totalInteractions = points.reduce((a, p) => a + p.interactions, 0);
   const ranked = [...points].sort((a, b) => b.revenue - a.revenue);
 
-  const copyCode = () => {
-    if (!data.company) return;
-    navigator.clipboard?.writeText(data.company.joinCode);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1800);
-  };
-
   return (
     <>
       <PageHead
-        title="Торговые точки"
-        subtitle={`Сравнение по результату, качеству разговоров и покрытию бейджами. Здесь же — код для подключения ${L.employeePlural.toLowerCase()}.`}
+        title={L.locationPlural}
+        subtitle="Сравнение по результату, качеству разговоров и присутствию на связи."
       />
-
-      <Card className="mb-5 p-5">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="label mb-1">Код компании</p>
-            <p className="text-[13px] text-slate-500">
-              Сотрудник вводит его при регистрации — так он попадает в вашу сеть и выбирает свою точку.
-            </p>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <code className="num rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-[15px] font-semibold text-ink">
-              {data.company?.joinCode}
-            </code>
-            <button type="button" className="btn-ghost" onClick={copyCode}>
-              {copied ? <Check size={15} /> : <Copy size={15} />}
-              {copied ? 'Скопировано' : 'Копировать'}
-            </button>
-          </div>
-        </div>
-      </Card>
 
       {points.length === 0 ? (
         <EmptyState
           icon={<Store size={22} />}
-          title={`${L.locationPlural} пока нет`}
-          hint={`Добавьте точку, чтобы закрепить за ней ${L.employeePlural.toLowerCase()} и увидеть её показатели.`}
+          title="Сравнивать пока нечего"
+          hint={`На пилоте работает одна точка. Раздел наполнится, когда ${L.locationPlural.toLowerCase()} станет несколько — сотрудники заводятся в «Состав и доступы».`}
         />
       ) : (
         <>

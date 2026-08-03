@@ -110,17 +110,17 @@ export default function Overview({ onGoTo }: { onGoTo: (tab: string) => void }) 
       <>
         <PageHead
           title={`Здравствуйте, ${session?.name.split(' ')[0] ?? ''}`}
-          subtitle={`Компания создана. Осталось подключить ${L.employeePlural.toLowerCase()} — и цифры начнут наполняться.`}
+          subtitle="Показатели считаются по настоящим сменам — придуманных цифр здесь не будет."
         />
         <RopBadgePanel />
         <div className="mt-6">
           <EmptyState
             icon={<Target size={22} />}
-            title={`${L.employeePlural} пока не подключены`}
-            hint="Передайте код компании — он лежит в разделе «Торговые точки». После первой смены здесь появятся показатели и разбор диалогов."
+            title="Данных пока нет"
+            hint={`Заведите смену в разделе «Состав и доступы»: там выдаются PIN и пароли. После первых смен здесь появятся показатели и разбор ${L.interactionGenitivePlural}.`}
             action={
-              <button type="button" className="console-btn-primary" onClick={() => onGoTo('points')}>
-                Открыть код компании
+              <button type="button" className="console-btn-primary" onClick={() => onGoTo('staff')}>
+                Состав и доступы
               </button>
             }
           />
