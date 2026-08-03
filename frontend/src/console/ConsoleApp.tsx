@@ -25,7 +25,12 @@ export interface ConsoleAppProps {
 export default function ConsoleApp({ role }: ConsoleAppProps) {
   const platformSession = getSession();
   const identity: PlatformIdentity | null = platformSession
-    ? { employeeId: platformSession.employeeId, role, name: platformSession.name }
+    ? {
+        employeeId: platformSession.employeeId,
+        role,
+        name: platformSession.name,
+        venueName: platformSession.venueName ?? '',
+      }
     : null;
 
   return (

@@ -76,6 +76,8 @@ interface StoreValue {
   profile: IndustryProfile;
   session: Account | null;
   me: Employee | null;
+  /** Название заведения из настоящей сессии — подпись рабочего пространства. */
+  venueName: string;
   logout: () => void;
   setKpi: (kpi: Omit<Kpi, 'id'>) => void;
   removeKpi: (id: string) => void;
@@ -99,6 +101,8 @@ export interface PlatformIdentity {
   employeeId: number;
   role: Role;
   name: string;
+  /** Название заведения — подпись рабочего пространства в боковой панели. */
+  venueName: string;
 }
 
 export function StoreProvider({
@@ -224,6 +228,7 @@ export function StoreProvider({
       profile,
       session,
       me,
+      venueName: identity?.venueName ?? '',
       focus,
       setFocus,
       promotePractice,
@@ -239,6 +244,7 @@ export function StoreProvider({
       profile,
       session,
       me,
+      identity?.venueName,
       focus,
       setFocus,
       promotePractice,

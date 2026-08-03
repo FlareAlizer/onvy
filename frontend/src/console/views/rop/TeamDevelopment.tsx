@@ -89,7 +89,7 @@ export default function TeamDevelopment({ onGoTo }: { onGoTo: (tab: string) => v
         <EmptyState
           icon={<Users size={22} />}
           title="Команда ещё не подключена"
-          hint={`Раздел наполнится, когда ${L.employeePlural.toLowerCase()} присоединятся по коду и проведут первые смены.`}
+          hint={`Раздел наполнится, когда ${L.employeePlural.toLowerCase()} проведут первые смены. Обучение и тесты в пилот не входят.`}
         />
       </>
     );

@@ -23,7 +23,7 @@ export function Shell({
   onNavigate: (id: string) => void;
   children: ReactNode;
 }) {
-  const { session, logout, data, focus, setFocus } = useStore();
+  const { session, logout, data, venueName, focus, setFocus } = useStore();
   const [drawer, setDrawer] = useState(false);
   const [focusOpen, setFocusOpen] = useState(false);
 
@@ -38,7 +38,7 @@ export function Shell({
 
   const isRop = session?.role === 'rop';
   const point = data.points.find((p) => p.id === session?.pointId);
-  const workspace = data.company?.name ?? '';
+  const workspace = venueName || data.company?.name || '';
 
   const navList = (
     <nav className="flex-1 space-y-6 overflow-y-auto px-3 py-4 scroll-thin">

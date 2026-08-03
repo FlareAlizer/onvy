@@ -9,6 +9,9 @@ export type Session = {
   refreshToken: string;
   employeeId: number;
   venueId: number;
+  /** Название заведения — им подписан кабинет. Может отсутствовать у сессий,
+   *  сохранённых до появления поля: тогда подпись просто пустая. */
+  venueName?: string;
   role: string;
   name: string;
   language: string;
@@ -214,6 +217,7 @@ async function completeLogin(tokens: TokenPairResponse): Promise<Session> {
     refreshToken: tokens.refresh_token,
     employeeId: me.id,
     venueId: me.venue_id,
+    venueName: me.venue_name,
     role: me.role,
     name: me.name,
     language: me.language,
