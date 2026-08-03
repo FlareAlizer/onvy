@@ -45,8 +45,25 @@ class ConnectionRegistry:
     def add(self, employee_id: int, websocket: WebSocket) -> None:
         self._sockets[employee_id] = websocket
 
-    def remove(self, employee_id: int) -> None:
-        self._sockets.pop(employee_id, None)
+    def remove(self, employee_id: int, websocket: WebSocket | None = None) -> bool:
+        """Снять сокет сотрудника. Возвращает True, если сняли именно его.
+
+        `websocket` обязателен везде, где соединение закрывается: телефон в зале
+        переподключается на каждой икоте вайфая, и старое соединение закрывается
+        уже ПОСЛЕ того, как открылось новое. Безусловный pop в этот момент
+        выбрасывал из реестра живой сокет, а вызывающий следом отписывал его от
+        шины и снимал со смены. Снаружи это выглядело хуже всего: человек
+        числится «на смене» (пинг нового сокета обновляет отметку), а реплики до
+        него молча не доходят.
+        """
+        current = self._sockets.get(employee_id)
+        if current is None:
+            return False
+        if websocket is not None and current is not websocket:
+            # Сотрудник уже переподключился — закрывается прошлое соединение.
+            return False
+        del self._sockets[employee_id]
+        return True
 
     def has(self, employee_id: int) -> bool:
         return employee_id in self._sockets
@@ -60,7 +77,7 @@ class ConnectionRegistry:
             await websocket.send_json(payload)
         except Exception:  # noqa: BLE001 — сокет мёртв, это не ошибка отправителя
             logger.info("Сокет сотрудника %s мёртв — снимаю", employee_id)
-            self.remove(employee_id)
+            self.remove(employee_id, websocket)
             return False
         return True
 
