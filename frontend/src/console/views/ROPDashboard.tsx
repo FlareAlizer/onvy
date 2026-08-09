@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import {
   BookOpen,
   ChartNoAxesCombined,
+  CircleHelp,
   ClipboardCheck,
   LayoutDashboard,
   Sparkles,
@@ -21,12 +22,14 @@ import TestGenerator from './rop/TestGenerator';
 import Points from './rop/Points';
 import PilotReport from './rop/PilotReport';
 import Knowledge from './Knowledge';
+import HelpView from '../../views/HelpView';
 import ManagerView from '../../views/ManagerView';
 import StaffTab from '../../components/manager/StaffTab';
 
 type Tab =
   | 'live'
   | 'roster'
+  | 'help'
   | 'overview'
   | 'analytics'
   | 'staff'
@@ -52,7 +55,7 @@ export default function ROPDashboard() {
    * Приоритет задаётся фокусом: культура, операции или продажи.
    */
   const nav = useMemo(() => {
-    const items: Record<Exclude<Tab, 'live' | 'roster'>, NavItem> = {
+    const items: Record<Exclude<Tab, 'live' | 'roster' | 'help'>, NavItem> = {
       overview: { id: 'overview', label: 'Дашборд', icon: LayoutDashboard },
       analytics: { id: 'analytics', label: `Аналитика ${L.interactionGenitivePlural}`, icon: ChartNoAxesCombined },
       points: { id: 'points', label: 'Торговые точки', icon: Store, badge: data.points.length || undefined },
@@ -62,7 +65,7 @@ export default function ROPDashboard() {
       knowledge: { id: 'knowledge', label: 'База знаний', icon: BookOpen },
       pilot: { id: 'pilot', label: 'Отчёт пилота', icon: ClipboardCheck },
     };
-    const order = FOCUS_META[focus].nav as Exclude<Tab, 'live' | 'roster'>[];
+    const order = FOCUS_META[focus].nav as Exclude<Tab, 'live' | 'roster' | 'help'>[];
     const primary = order.slice(0, 4).map((k) => items[k]);
     const secondary = order.slice(4).map((k) => items[k]);
     return [
@@ -73,6 +76,7 @@ export default function ROPDashboard() {
         items: [
           { id: 'live', label: 'Стоп-лист и смена', icon: ListX } as NavItem,
           { id: 'roster', label: 'Состав и доступы', icon: IdCard } as NavItem,
+          { id: 'help', label: 'Как это работает', icon: CircleHelp } as NavItem,
         ],
       },
       { group: FOCUS_META[focus].label, items: primary },
@@ -88,6 +92,7 @@ export default function ROPDashboard() {
   return (
     <Shell nav={nav} active={tab} onNavigate={(id) => setTab(id as Tab)}>
       {tab === 'roster' && <StaffTab />}
+      {tab === 'help' && <HelpView />}
       {tab === 'overview' && <Overview onGoTo={(t) => setTab(t as Tab)} />}
       {tab === 'analytics' && <Analytics />}
       {tab === 'staff' && <Staff />}

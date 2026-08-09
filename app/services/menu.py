@@ -15,15 +15,14 @@ dataclass'ы), чтобы этот модуль мог дёргать и REST-р
 Различие None и пустого значения в техкарте (composition/allergens/...) —
 принципиальное требование порта (app/ports/menu.py) и легально значимо для
 аллергенов (spec §5 S2): NULL значит "не проверялось", а не "ничего нет".
-Импорт CSV (нижняя часть файла) обязан различать эти два случая на входе,
-а не только модель на выходе.
+Импорт файла меню (нижняя часть этого файла — сопоставление с БД; сам разбор
+CSV/Excel — в app/services/menu_import.py) обязан различать эти два случая
+на входе, а не только модель на выходе.
 """
 
-import csv
-import io
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,6 +30,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models.menu_item import MenuItem
 from app.db.models.stop_list_entry import StopListEntry
 from app.ports.menu import MenuItemData, StopListEntryData
+from app.services.menu_import import MenuCsvRow, MenuImportError, parse_menu_file  # noqa: F401
+
+# MenuCsvRow и MenuImportError импортированы, а не определены здесь — сам разбор
+# файла (CSV/Excel) переехал в app/services/menu_import.py, но app/api/menu.py,
+# scripts/seed_venue.py и тесты продолжают брать их как menu_service.MenuCsvRow /
+# menu_service.MenuImportError, поэтому оставляем имена доступными и тут.
 
 _KOPECKS_PER_UNIT = 100
 
@@ -55,10 +60,6 @@ class NotOnStopListError(MenuServiceError):
     def __init__(self, menu_item_id: int) -> None:
         super().__init__(f"Позиция {menu_item_id} сейчас не в стоп-листе")
         self.menu_item_id = menu_item_id
-
-
-class MenuImportError(MenuServiceError):
-    """Файл целиком нечитаем: не CSV, неизвестная кодировка, нет нужных колонок."""
 
 
 # --- Цена: БД хранит копейки (int), порт и API оперируют рублями (Decimal). ---
@@ -364,55 +365,19 @@ async def soft_delete_menu_item(session: AsyncSession, venue_id: int, menu_item_
     await session.flush()
 
 
-# --- Импорт CSV: разбор (чистая логика, без БД) ------------------------------
+# --- Импорт файла меню: сопоставление с БД и применение ----------------------
 #
-# Колонки (по заголовку, порядок в файле не важен): название, категория, цена,
-# состав, аллергены, вес, время отдачи, острота. Пустая ячейка техкарты значит
-# "данных нет" (None) — ассистент обязан честно сказать "уточните на кухне"
-# (spec §5 S2), а не промолчать и не додумать. Единственное исключение —
-# аллергены: пустая ячейка тоже None, но явное слово "нет"/"нету"/"отсутствуют"
-# в ячейке — это подтверждённый факт "аллергенов нет" (allergens=()), и это
-# юридически другое утверждение, чем "не проверялось" (см. app/ports/menu.py).
-
-_HEADER_ALIASES: dict[str, str] = {
-    "название": "name",
-    "наименование": "name",
-    "блюдо": "name",
-    "категория": "category",
-    "цена": "price",
-    "состав": "composition",
-    "аллергены": "allergens",
-    "вес": "weight_grams",
-    "вес, г": "weight_grams",
-    "время отдачи": "prep_time_minutes",
-    "время приготовления": "prep_time_minutes",
-    "острота": "spiciness",
-}
-
-# Только однозначные утвердительные слова — "без" отдельно не берём: "без глютена"
-# в свободном тексте значило бы другое, а как значение всей ячейки — слишком
-# двусмысленно, чтобы автоматически считать это подтверждением "аллергенов нет".
-_NO_ALLERGENS_WORDS = frozenset({"нет", "нету", "отсутствуют"})
-
-
-@dataclass(frozen=True)
-class MenuCsvRow:
-    """Одна разобранная строка файла. errors непусто — строка не будет применена."""
-
-    line_number: int
-    name: str
-    category: str | None
-    price: Decimal | None
-    composition: str | None
-    allergens: tuple[str, ...] | None
-    spiciness: int | None
-    weight_grams: int | None
-    prep_time_minutes: int | None
-    errors: tuple[str, ...] = ()
-
-    @property
-    def is_valid(self) -> bool:
-        return not self.errors
+# Сам разбор файла (CSV/Excel, кодировка, поиск шапки, алиасы колонок) —
+# в app/services/menu_import.py, отдельным модулем без БД (см. его докстринг).
+# Здесь — то, что этому модулю принципиально недоступно: сопоставление
+# разобранных строк с уже существующими позициями точки и запись в БД.
+#
+# Пустая ячейка техкарты значит "данных нет" (None) — ассистент обязан честно
+# сказать "уточните на кухне" (spec §5 S2), а не промолчать и не додумать.
+# Единственное исключение — аллергены: пустая ячейка тоже None, но явное слово
+# "нет"/"нету"/"отсутствуют" в ячейке — это подтверждённый факт "аллергенов
+# нет" (allergens=()), и это юридически другое утверждение, чем "не
+# проверялось" (см. app/ports/menu.py, app/services/menu_import.py).
 
 
 @dataclass(frozen=True)
@@ -430,141 +395,6 @@ class MenuImportPlan:
     to_update: list[MenuImportPlanItem] = field(default_factory=list)
     rejected: list[MenuCsvRow] = field(default_factory=list)
     applied: bool = False
-
-
-def decode_menu_csv(raw: bytes) -> str:
-    """Декодировать CSV. Приоритет UTF-8: если сотрудник выгрузил файл сам, это чаще
-    всего он. CP1251 — второй в очереди осознанно: это реальный случай экспорта из
-    Excel под русской Windows (разделитель там обычно ";"), а не гипотетический."""
-    for encoding in ("utf-8-sig", "cp1251"):
-        try:
-            return raw.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    raise MenuImportError("Не удалось определить кодировку файла (ожидается UTF-8 или CP1251)")
-
-
-def _sniff_delimiter(sample: str) -> str:
-    try:
-        return csv.Sniffer().sniff(sample, delimiters=";,").delimiter
-    except csv.Error:
-        # Короткий/однострочный файл — Sniffer не справляется. По умолчанию ";":
-        # это разделитель Excel под русской локалью, самый вероятный реальный случай.
-        return ";" if sample.count(";") >= sample.count(",") else ","
-
-
-def _parse_optional_int(
-    raw: str, *, field_name: str, errors: list[str], min_value: int | None = None,
-    max_value: int | None = None,
-) -> int | None:
-    if not raw:
-        return None
-    try:
-        value = int(raw)
-    except ValueError:
-        errors.append(f"не удалось разобрать «{field_name}»: {raw!r}")
-        return None
-    too_small = min_value is not None and value < min_value
-    too_large = max_value is not None and value > max_value
-    if too_small or too_large:
-        errors.append(f"«{field_name}» вне диапазона {min_value}..{max_value}: {value}")
-        return None
-    return value
-
-
-def _parse_row(line_number: int, values: dict[str, str]) -> MenuCsvRow:
-    errors: list[str] = []
-
-    name = values.get("name", "")
-    if not name:
-        errors.append("не заполнено название")
-
-    category = values.get("category") or None
-
-    price_raw = values.get("price", "")
-    price: Decimal | None = None
-    if not price_raw:
-        errors.append("не заполнена цена")
-    else:
-        try:
-            price = Decimal(price_raw.replace(",", "."))
-        except InvalidOperation:
-            errors.append(f"не удалось разобрать цену: {price_raw!r}")
-        else:
-            if price < 0:
-                errors.append(f"цена не может быть отрицательной: {price_raw!r}")
-                price = None
-
-    composition = values.get("composition") or None
-
-    allergens_raw = values.get("allergens", "")
-    allergens: tuple[str, ...] | None
-    if not allergens_raw:
-        allergens = None
-    elif allergens_raw.strip().casefold() in _NO_ALLERGENS_WORDS:
-        allergens = ()
-    else:
-        allergens = tuple(a.strip() for a in allergens_raw.split(",") if a.strip())
-
-    spiciness = _parse_optional_int(
-        values.get("spiciness", ""), field_name="острота", errors=errors, min_value=0, max_value=3
-    )
-    weight_grams = _parse_optional_int(
-        values.get("weight_grams", ""), field_name="вес", errors=errors, min_value=0
-    )
-    prep_time_minutes = _parse_optional_int(
-        values.get("prep_time_minutes", ""), field_name="время отдачи", errors=errors, min_value=0
-    )
-
-    return MenuCsvRow(
-        line_number=line_number,
-        name=name,
-        category=category,
-        price=price,
-        composition=composition,
-        allergens=allergens,
-        spiciness=spiciness,
-        weight_grams=weight_grams,
-        prep_time_minutes=prep_time_minutes,
-        errors=tuple(errors),
-    )
-
-
-def parse_menu_csv(raw: bytes) -> list[MenuCsvRow]:
-    """Разобрать файл в список строк. Чистая функция — без БД, без FastAPI,
-    легко проверяется юнит-тестами (см. tests/test_menu_import.py)."""
-    text = decode_menu_csv(raw)
-    delimiter = _sniff_delimiter(text[:2048])
-    rows = list(csv.reader(io.StringIO(text), delimiter=delimiter))
-    if not rows:
-        raise MenuImportError("Файл пуст")
-
-    header = [cell.strip().casefold() for cell in rows[0]]
-    column_map: dict[int, str] = {}
-    for idx, cell in enumerate(header):
-        mapped = _HEADER_ALIASES.get(cell)
-        if mapped:
-            column_map[idx] = mapped
-
-    present_fields = set(column_map.values())
-    if "name" not in present_fields:
-        raise MenuImportError("В файле нет обязательной колонки «название»")
-    if "price" not in present_fields:
-        raise MenuImportError("В файле нет обязательной колонки «цена»")
-
-    parsed: list[MenuCsvRow] = []
-    for line_number, raw_row in enumerate(rows[1:], start=2):
-        if not any(cell.strip() for cell in raw_row):
-            continue  # полностью пустая строка — не ошибка данных, просто пропуск
-        values = {
-            field_name: (raw_row[idx].strip() if idx < len(raw_row) else "")
-            for idx, field_name in column_map.items()
-        }
-        parsed.append(_parse_row(line_number, values))
-    return parsed
-
-
-# --- Импорт CSV: применение к БД --------------------------------------------
 
 
 async def build_menu_import_plan(
@@ -646,13 +476,23 @@ async def apply_menu_import_plan(
 
 
 async def import_menu_csv(
-    session: AsyncSession, venue_id: int, raw: bytes, *, dry_run: bool
+    session: AsyncSession,
+    venue_id: int,
+    raw: bytes,
+    *,
+    dry_run: bool,
+    filename: str | None = None,
 ) -> MenuImportPlan:
     """Точка входа импорта: разобрать -> сопоставить с БД -> (если не dry-run) применить.
 
+    Имя не в сигнатуре сохранилось историческим ("csv"), хотя файл может быть и
+    Excel (.xlsx) — формат определяется по содержимому в parse_menu_file, не по
+    имени функции. `filename` опционален и нужен только для текста ошибки
+    (scripts/seed_venue.py его не передаёт и продолжает работать как раньше).
+
     dry_run=True — только план, ничего не меняется (управляющий видит, что создастся
     и что обновится, до применения). dry_run=False — план тут же применяется."""
-    parsed_rows = parse_menu_csv(raw)
+    parsed_rows = parse_menu_file(raw, filename=filename)
     plan = await build_menu_import_plan(session, venue_id, parsed_rows)
     if dry_run:
         return plan

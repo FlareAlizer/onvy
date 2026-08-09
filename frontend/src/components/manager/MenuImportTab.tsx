@@ -100,15 +100,16 @@ export default function MenuImportTab() {
       <div>
         <h2 className="text-xl font-bold tracking-tight text-stone-50">Импорт меню</h2>
         <p className="mt-1 text-sm text-stone-400">
-          Файл CSV: название, категория, цена, состав, аллергены, вес, время отдачи, острота —
-          порядок колонок не важен, пустая ячейка значит «данных нет».
+          Файл Excel (.xlsx) или CSV: название, категория, цена, состав, аллергены, вес, время
+          отдачи, острота — порядок и формулировка колонок не важны, шапка может быть не в первой
+          строке, пустая ячейка значит «данных нет».
         </p>
       </div>
 
       <input
         ref={inputRef}
         type="file"
-        accept=".csv,text/csv"
+        accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         className="hidden"
         onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
       />
@@ -117,7 +118,7 @@ export default function MenuImportTab() {
         className="flex items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-stone-700 px-5 py-6 text-base font-semibold text-stone-300 transition-transform duration-150 ease-out active:scale-[0.98]"
       >
         <UploadCloud size={22} />
-        {file ? file.name : 'Выбрать файл CSV'}
+        {file ? file.name : 'Выбрать файл Excel или CSV'}
       </button>
 
       {file && phase !== 'applied' && (

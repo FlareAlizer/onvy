@@ -12,6 +12,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ChevronDown,
+  Ear,
+  EarOff,
   Loader2,
   Lock,
   Mic,
@@ -30,7 +32,7 @@ import {
   type VoiceResult,
 } from '../lib/api';
 import { useComms } from '../lib/comms';
-import { startRecording, stopRecording } from '../lib/recorder';
+import { startRecording, stopRecording, WakeListener } from '../lib/recorder';
 import PersonPicker from '../components/PersonPicker';
 
 // Кому уходит нажатие кнопки. Выбор пальцем нужен для случая, когда называть
@@ -98,6 +100,17 @@ export default function WaiterView({ onExit }: Props = {}) {
   const [error, setError] = useState<string | null>(null);
   const phaseRef = useRef<Phase>('idle');
 
+  // Постоянное прослушивание («Онви слушает»). Выключено по умолчанию: открытый
+  // микрофон — это батарея, трафик на облачное распознавание и чужие разговоры
+  // в зале. Официант включает режим сам и должен видеть, что он активен.
+  const [wakeOn, setWakeOn] = useState(false);
+  const [wakeState, setWakeState] = useState<'idle' | 'speech' | 'sending'>('idle');
+  const wakeListenerRef = useRef<WakeListener | null>(null);
+  // Кнопка и постоянное прослушивание читают этот флаг из стабильных колбэков
+  // (медиа-клавиша гарнитуры создаётся один раз) — обычный useState там был бы
+  // устаревшим значением из первого рендера.
+  const wakeOnRef = useRef(false);
+
   // Выбор адресата пальцем и отправка текстом — запасной путь для того же
   // случая, когда голосом неудобно (шум, не хочет говорить при госте).
   const [панельОткрыта, setПанельОткрыта] = useState(false);
@@ -106,12 +119,55 @@ export default function WaiterView({ onExit }: Props = {}) {
   const [отправка, setОтправка] = useState(false);
 
   phaseRef.current = phase;
+  wakeOnRef.current = wakeOn;
+
+  // Адресат читается через ref теми же стабильными колбэками, что и кнопка:
+  // объявлен здесь, а не рядом с кнопкой, потому что нужен ещё и постоянному
+  // прослушиванию, которое собирается раньше кнопки ниже по файлу.
+  const адресатRef = useRef<Адресат>(адресат);
+  адресатRef.current = адресат;
 
   const push = useCallback((item: Omit<FeedItem, 'id' | 'at'>) => {
     setСобственные((current) =>
       [{ ...item, id: crypto.randomUUID(), at: Date.now() }, ...current].slice(0, 12),
     );
   }, []);
+
+  // Кладёт результат в ленту. Отдельно от воспроизведения звука: у кнопки и у
+  // постоянного прослушивания разные способы проиграть ответ (см. finish и
+  // onWakeUtterance ниже), а лента одна на оба пути.
+  const applyResult = useCallback(
+    (result: VoiceResult) => {
+      if (result.intent === 'ignored') return;
+
+      if (result.intent === 'send_group' || result.intent === 'send_person') {
+        push({
+          kind: 'sent',
+          title: result.group ? `Передал: ${result.group}` : `Передал: ${result.person_name ?? ''}`,
+          text: result.query_text,
+          warning: result.delivered_to.length === 0 ? 'Никого нет на связи' : undefined,
+        });
+      } else {
+        push({
+          kind: 'answer',
+          title: result.query_text || 'Ассистент',
+          text: result.answer_text,
+          warning: result.degraded ? DEGRADED_TEXT[result.degraded] : undefined,
+        });
+      }
+    },
+    [push],
+  );
+
+  // Путь кнопки и текстового ввода: звук играет обычным Audio-элементом,
+  // отдельным от AudioContext постоянного прослушивания.
+  const handleResult = useCallback(
+    (result: VoiceResult) => {
+      applyResult(result);
+      if (result.audio_base64) void playAudio(result.audio_base64, result.mime_type);
+    },
+    [applyResult],
+  );
 
   // Одна лента на экране: свои реплики и входящие из рации, новые сверху.
   const feed = useMemo<FeedItem[]>(
@@ -171,24 +227,97 @@ export default function WaiterView({ onExit }: Props = {}) {
     }
   };
 
+  // --- Постоянное прослушивание («Онви слушает») -------------------------
+  //
+  // Отправляем с always_on=true: без слова «Онви» в начале фразы сервер
+  // вернёт intent «ignored» и ничего не сделает (require_wake_word в
+  // app/domain/intents.py) — так фоновые разговоры зала не улетают ассистенту.
+  const onWakeUtterance = useCallback(
+    async (blob: Blob) => {
+      const кому = адресатRef.current;
+      try {
+        const result: VoiceResult = await sendVoice(
+          blob,
+          true,
+          кому.kind === 'assistant'
+            ? undefined
+            : кому.kind === 'person'
+              ? { employeeId: кому.id }
+              : { group: кому.group },
+        );
+        applyResult(result);
+        if (result.audio_base64) {
+          // Играем через AudioContext самого слушателя, а не обычный Audio:
+          // пока идёт playMp3, обработчик микрофона остаётся «занят» (busy) и
+          // не подхватит собственный голос ассистента из динамика телефона.
+          await wakeListenerRef.current?.playMp3(result.audio_base64);
+        }
+      } catch {
+        setError('Онви не расслышал — проверьте связь.');
+      }
+    },
+    [applyResult],
+  );
+
+  const startWakeListener = useCallback(async () => {
+    if (wakeListenerRef.current) return; // уже слушает
+    setError(null);
+    try {
+      const listener = new WakeListener(onWakeUtterance, setWakeState);
+      await listener.start();
+      wakeListenerRef.current = listener;
+    } catch {
+      setWakeOn(false);
+      setError('Онви не слышит — разрешите микрофон в настройках браузера.');
+    }
+  }, [onWakeUtterance]);
+
+  const stopWakeListener = useCallback(async () => {
+    const listener = wakeListenerRef.current;
+    wakeListenerRef.current = null;
+    setWakeState('idle');
+    if (listener) await listener.stop();
+  }, []);
+
+  // Переключатель на экране. Молчащий выключенный режим хуже явной ошибки —
+  // поэтому неудачу показываем текстом (см. startWakeListener), а не молча
+  // оставляем тумблер в положении «включено» без работающего микрофона.
+  const toggleWake = useCallback(() => {
+    if (wakeOn) {
+      setWakeOn(false);
+      void stopWakeListener();
+    } else {
+      setWakeOn(true);
+      void startWakeListener();
+    }
+  }, [wakeOn, startWakeListener, stopWakeListener]);
+
+  // Закрыть микрофон постоянного прослушивания при уходе с экрана — иначе
+  // индикатор записи в браузере горит и после того, как официант открыл кабинет.
+  useEffect(() => {
+    return () => {
+      void stopWakeListener();
+    };
+  }, [stopWakeListener]);
+
   // --- Кнопка ------------------------------------------------------------
   const begin = useCallback(async () => {
     if (phaseRef.current !== 'idle') return;
     setError(null);
+    // Постоянное прослушивание и кнопка не должны держать микрофон
+    // одновременно: иначе это два открытых устройства сразу, а RMS-детектор
+    // словил бы ту же фразу, что произносится в кнопку, и попытался бы
+    // отправить её ещё раз после отпускания.
+    if (wakeListenerRef.current) await stopWakeListener();
     try {
       await startRecording();
       setPhase('recording');
       navigator.vibrate?.(15);
     } catch {
       setError('Нет доступа к микрофону. Разрешите его в настройках браузера.');
+      if (wakeOnRef.current) void startWakeListener();
     }
-  }, []);
-
-  // Адресат читается через ref: обработчик висит на медиа-клавише гарнитуры и
-  // пересоздаётся редко, а замыкание на состояние отправляло бы реплику тому,
-  // кто был выбран при первом рендере, а не сейчас.
-  const адресатRef = useRef<Адресат>(адресат);
-  адресатRef.current = адресат;
+  }, [stopWakeListener, startWakeListener]);
 
   const finish = useCallback(async () => {
     if (phaseRef.current !== 'recording') return;
@@ -213,29 +342,11 @@ export default function WaiterView({ onExit }: Props = {}) {
       setError('Не отправилось. Проверьте связь и повторите.');
     } finally {
       setPhase('idle');
+      // Отпустили кнопку — если постоянное прослушивание было включено,
+      // возвращаем его: begin() выключал микрофон только на время записи.
+      if (wakeOnRef.current) void startWakeListener();
     }
-  }, []);
-
-  const handleResult = (result: VoiceResult) => {
-    if (result.intent === 'ignored') return;
-
-    if (result.intent === 'send_group' || result.intent === 'send_person') {
-      push({
-        kind: 'sent',
-        title: result.group ? `Передал: ${result.group}` : `Передал: ${result.person_name ?? ''}`,
-        text: result.query_text,
-        warning: result.delivered_to.length === 0 ? 'Никого нет на связи' : undefined,
-      });
-    } else {
-      push({
-        kind: 'answer',
-        title: result.query_text || 'Ассистент',
-        text: result.answer_text,
-        warning: result.degraded ? DEGRADED_TEXT[result.degraded] : undefined,
-      });
-    }
-    if (result.audio_base64) void playAudio(result.audio_base64, result.mime_type);
-  };
+  }, [handleResult, startWakeListener]);
 
   // Кнопка на проводной гарнитуре приходит как медиа-клавиша. Переключаем
   // запись по ней: нажал — говорит, нажал ещё раз — отправилось.
@@ -310,6 +421,43 @@ export default function WaiterView({ onExit }: Props = {}) {
           size={18}
           className={`transition-transform duration-150 ${панельОткрыта ? 'rotate-180' : ''}`}
         />
+      </button>
+
+      {/* Постоянное прослушивание — выключено по умолчанию: открытый микрофон
+          это заряд телефона, трафик на распознавание и чужие разговоры зала.
+          Официант включает сам и всегда видит, включён ли он. */}
+      <button
+        onClick={toggleWake}
+        style={{ minHeight: 44 }}
+        className={`mx-5 mb-2 flex items-center justify-between gap-2 rounded-xl px-4 text-sm font-semibold transition-colors duration-150 ease-out ${
+          wakeOn ? 'bg-sky-500/15 text-sky-300' : 'bg-stone-900 text-stone-400'
+        }`}
+      >
+        <span className="flex items-center gap-2">
+          {wakeOn ? (
+            <Ear size={16} className={wakeState === 'speech' ? 'animate-pulse' : undefined} />
+          ) : (
+            <EarOff size={16} />
+          )}
+          {!wakeOn
+            ? 'Онви не слушает — включить'
+            : wakeState === 'speech'
+              ? 'Онви слышит вас'
+              : wakeState === 'sending'
+                ? 'Онви обрабатывает фразу'
+                : 'Онви слушает — скажите «Онви…»'}
+        </span>
+        <span
+          className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-150 ease-out ${
+            wakeOn ? 'bg-sky-500' : 'bg-stone-700'
+          }`}
+        >
+          <span
+            className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-transform duration-150 ease-out ${
+              wakeOn ? 'translate-x-5' : 'translate-x-0.5'
+            }`}
+          />
+        </span>
       </button>
 
       {панельОткрыта && (

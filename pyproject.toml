@@ -17,6 +17,7 @@ dependencies = [
     "argon2-cffi",
     "segno",
     "pydantic[email]>=2.13.4",
+    "openpyxl",
 ]
 
 [dependency-groups]

@@ -1,23 +1,24 @@
-"""Разбор CSV меню и конвертация цены — чистая логика, без БД.
+"""Разбор файла меню (CSV/Excel) и конвертация цены — чистая логика, без БД.
 
-Реальность, под которую эти тесты пишутся: выгрузка меню из Excel под русской
-Windows приходит в CP1251 с разделителем ";" — это не гипотетический случай,
-управляющий чайханы будет присылать файл именно так (см. задание лупа).
+Реальность, под которую эти тесты пишутся: заведение присылает файл, который
+мы никогда не видим заранее (см. задание лупа) — от выгрузки из Excel под
+русской Windows в CP1251 с разделителем ";" до настоящего .xlsx с шапкой не в
+первой строке и заголовками, которые никто заранее не согласовывал. Разбор
+обязан справляться со всем этим и объяснять по-русски, что не так, если не
+справился — не трейсбеком.
+
 Дубликаты имён внутри файла и сопоставление с БД (create/update) требуют
 реальной сессии — см. тесты needs_db в tests/test_menu_api.py.
 """
 
+import io
 from decimal import Decimal
 
 import pytest
+from openpyxl import Workbook
 
-from app.services.menu import (
-    MenuImportError,
-    decode_menu_csv,
-    parse_menu_csv,
-    price_to_decimal,
-    price_to_kopecks,
-)
+from app.services.menu import price_to_decimal, price_to_kopecks
+from app.services.menu_import import MenuImportError, decode_menu_csv, parse_menu_file
 
 # --- Конвертация цены: копейки в БД <-> рубли в порте/API ---------------------
 
@@ -79,7 +80,7 @@ def _cp1251_csv(*rows: str) -> bytes:
 def test_parse_cp1251_semicolon_csv():
     raw = _cp1251_csv("Лагман;Горячее;450;лапша, говядина;глютен;350;15;2")
 
-    rows = parse_menu_csv(raw)
+    rows = parse_menu_file(raw)
 
     assert len(rows) == 1
     row = rows[0]
@@ -98,7 +99,7 @@ def test_parse_utf8_comma_csv_also_works():
     header = "название,категория,цена,состав,аллергены,вес,время отдачи,острота"
     raw = (header + "\nПлов,Горячее,520,рис; баранина,,400,20,1\n").encode("utf-8")
 
-    rows = parse_menu_csv(raw)
+    rows = parse_menu_file(raw)
 
     assert len(rows) == 1
     assert rows[0].name == "Плов"
@@ -114,7 +115,7 @@ def test_empty_technical_card_cells_mean_unknown_not_empty():
     "уточните на кухне", а не промолчать и не додумать."""
     raw = _cp1251_csv("Чай зелёный;Напитки;120;;;;;")
 
-    row = parse_menu_csv(raw)[0]
+    row = parse_menu_file(raw)[0]
 
     assert row.is_valid
     assert row.composition is None
@@ -129,7 +130,7 @@ def test_explicit_no_allergens_word_means_confirmed_empty():
     а НЕ то же самое, что пустая ячейка (allergens=None, "не проверялось")."""
     raw = _cp1251_csv("Самса с бараниной;Выпечка;180;тесто, баранина;нет;150;20;1")
 
-    row = parse_menu_csv(raw)[0]
+    row = parse_menu_file(raw)[0]
 
     assert row.allergens == ()
     assert row.allergens is not None
@@ -138,7 +139,7 @@ def test_explicit_no_allergens_word_means_confirmed_empty():
 def test_no_allergens_word_is_case_and_space_insensitive():
     raw = _cp1251_csv("Самса;Выпечка;180;тесто;  НЕТ  ;150;20;1")
 
-    row = parse_menu_csv(raw)[0]
+    row = parse_menu_file(raw)[0]
 
     assert row.allergens == ()
 
@@ -146,7 +147,7 @@ def test_no_allergens_word_is_case_and_space_insensitive():
 def test_allergens_list_parses_multiple_comma_separated_values():
     raw = _cp1251_csv("Плов;Горячее;520;рис, баранина;орехи, молоко;400;20;1")
 
-    row = parse_menu_csv(raw)[0]
+    row = parse_menu_file(raw)[0]
 
     assert row.allergens == ("орехи", "молоко")
 
@@ -157,7 +158,7 @@ def test_allergens_list_parses_multiple_comma_separated_values():
 def test_missing_name_is_a_row_error_not_a_crash():
     raw = _cp1251_csv(";Горячее;450;;;;;")
 
-    row = parse_menu_csv(raw)[0]
+    row = parse_menu_file(raw)[0]
 
     assert not row.is_valid
     assert any("название" in e for e in row.errors)
@@ -166,7 +167,7 @@ def test_missing_name_is_a_row_error_not_a_crash():
 def test_missing_price_is_a_row_error():
     raw = _cp1251_csv("Лагман;Горячее;;;;;;")
 
-    row = parse_menu_csv(raw)[0]
+    row = parse_menu_file(raw)[0]
 
     assert not row.is_valid
     assert any("цена" in e for e in row.errors)
@@ -175,7 +176,7 @@ def test_missing_price_is_a_row_error():
 def test_unparseable_price_is_a_row_error():
     raw = _cp1251_csv("Лагман;Горячее;дорого;;;;;")
 
-    row = parse_menu_csv(raw)[0]
+    row = parse_menu_file(raw)[0]
 
     assert not row.is_valid
     assert any("цену" in e for e in row.errors)
@@ -184,7 +185,7 @@ def test_unparseable_price_is_a_row_error():
 def test_negative_price_is_a_row_error():
     raw = _cp1251_csv("Лагман;Горячее;-10;;;;;")
 
-    row = parse_menu_csv(raw)[0]
+    row = parse_menu_file(raw)[0]
 
     assert not row.is_valid
 
@@ -193,7 +194,7 @@ def test_price_with_comma_decimal_separator_is_accepted():
     """Управляющий может ввести цену как в русской локали Excel: "450,50"."""
     raw = _cp1251_csv("Лагман;Горячее;450,50;;;;;")
 
-    row = parse_menu_csv(raw)[0]
+    row = parse_menu_file(raw)[0]
 
     assert row.is_valid
     assert row.price == Decimal("450.50")
@@ -202,7 +203,7 @@ def test_price_with_comma_decimal_separator_is_accepted():
 def test_spiciness_out_of_range_is_a_row_error():
     raw = _cp1251_csv("Лагман;Горячее;450;;;;;9")
 
-    row = parse_menu_csv(raw)[0]
+    row = parse_menu_file(raw)[0]
 
     assert not row.is_valid
     assert any("острота" in e for e in row.errors)
@@ -211,21 +212,14 @@ def test_spiciness_out_of_range_is_a_row_error():
 def test_empty_rows_are_silently_skipped():
     raw = _cp1251_csv("Лагман;Горячее;450;;;;;", ";;;;;;;", "Плов;Горячее;520;;;;;")
 
-    rows = parse_menu_csv(raw)
+    rows = parse_menu_file(raw)
 
     assert [r.name for r in rows] == ["Лагман", "Плов"]
 
 
-def test_missing_required_columns_raises_import_error():
-    raw = "категория;состав\nГорячее;лапша\n".encode()
-
-    with pytest.raises(MenuImportError):
-        parse_menu_csv(raw)
-
-
 def test_empty_file_raises_import_error():
     with pytest.raises(MenuImportError):
-        parse_menu_csv(b"")
+        parse_menu_file(b"")
 
 
 def test_column_order_in_file_does_not_matter():
@@ -233,8 +227,213 @@ def test_column_order_in_file_does_not_matter():
     из разных касс/Excel не гарантируют один и тот же порядок столбцов."""
     raw = "цена;название;острота\n450;Лагман;2\n".encode()
 
-    row = parse_menu_csv(raw)[0]
+    row = parse_menu_file(raw)[0]
 
     assert row.name == "Лагман"
     assert row.price == Decimal("450")
     assert row.spiciness == 2
+
+
+# --- Обязательная колонка отсутствует: ошибка должна быть человеку понятна ----
+
+
+def test_missing_required_columns_raises_import_error():
+    raw = "категория;состав\nГорячее;лапша\n".encode()
+
+    with pytest.raises(MenuImportError):
+        parse_menu_file(raw)
+
+
+def test_missing_name_column_error_lists_found_columns():
+    """Требование задания: если нет колонки «название» — показать, что нашли,
+    чтобы человек понял, какую колонку переименовать, а не гадал."""
+    raw = "цена;острота\n450;2\n".encode()
+
+    with pytest.raises(MenuImportError) as exc_info:
+        parse_menu_file(raw)
+
+    message = str(exc_info.value)
+    assert "название" in message
+    assert "цена" in message  # распознанная колонка упомянута в подсказке
+
+
+# --- Шапка не в первой строке: заведение в файле, дата, пустые строки --------
+
+
+def test_header_row_found_when_not_on_first_line():
+    """Реальный файл часто начинается с названия заведения и пустых строк —
+    шапка ищется в первых 15 строках, а не жёстко на первой."""
+    raw = (
+        "Меню чайханы «Дастархан»\n"
+        "\n"
+        "название;цена;острота\n"
+        "Лагман;450;2\n"
+    ).encode()
+
+    rows = parse_menu_file(raw)
+
+    assert len(rows) == 1
+    assert rows[0].name == "Лагман"
+    assert rows[0].line_number == 4  # нумерация строк — по файлу целиком, не по данным
+
+
+def test_header_not_found_within_scan_window_raises_readable_error():
+    """Если ни в одной из первых строк нет ни одной узнаваемой колонки —
+    ошибка должна объяснять, что мы искали, а не просто "не найдено"."""
+    raw = "\n".join(f"мусор {i}" for i in range(20)).encode()
+
+    with pytest.raises(MenuImportError) as exc_info:
+        parse_menu_file(raw)
+
+    assert "заголовк" in str(exc_info.value)
+
+
+# --- Широкие алиасы заголовков: реальные формулировки из разных касс --------
+
+
+@pytest.mark.parametrize(
+    ("header_word", "expected_field"),
+    [
+        ("Стоимость", "price"),
+        ("Цена, руб", "price"),
+        ("Цена за порцию", "price"),
+        ("Выход", "weight_grams"),
+        ("Выход, г", "weight_grams"),
+        ("Граммовка", "weight_grams"),
+        ("Порция", "weight_grams"),
+        ("Описание", "composition"),
+        ("Ингредиенты", "composition"),
+        ("Состав блюда", "composition"),
+        ("Раздел", "category"),
+        ("Группа", "category"),
+        ("Тип", "category"),
+        ("Время", "prep_time_minutes"),
+        ("Мин", "prep_time_minutes"),
+        ("Острота", "spiciness"),
+        ("Острое", "spiciness"),
+    ],
+)
+def test_wide_header_aliases_are_recognized(header_word, expected_field):
+    raw = f"название;цена;{header_word}\nЛагман;450;1\n".encode()
+
+    rows = parse_menu_file(raw)
+
+    row = rows[0]
+    assert row.name == "Лагман"
+    # у price/weight_grams/prep_time_minutes/spiciness значение "1" разбирается
+    # по-разному — проверяем не конкретное значение, а что колонка вообще узнана
+    # (иначе она осталась бы за бортом column_map и строка была бы короче).
+    field_value = {
+        "price": row.price,
+        "weight_grams": row.weight_grams,
+        "spiciness": row.spiciness,
+        "prep_time_minutes": row.prep_time_minutes,
+        "composition": row.composition,
+        "category": row.category,
+    }[expected_field]
+    assert field_value is not None
+
+
+def test_header_normalization_ignores_case_dots_and_yo_letter():
+    """«Ё» вместо «е», регистр, точка на конце — не должны мешать узнать колонку."""
+    raw = "НАЗВАНИЕ.;Цена.\nЛагман;450\n".encode()
+
+    rows = parse_menu_file(raw)
+
+    assert rows[0].name == "Лагман"
+
+
+def test_header_with_newline_inside_cell_is_recognized():
+    """Excel позволяет перенос строки внутри ячейки заголовка (Alt+Enter):
+    "Название\\n(блюда)" должно узнаться так же, как "название блюда"."""
+    raw = '"Название\n(блюда)";Цена\r\nЛагман;450\r\n'.encode()
+
+    rows = parse_menu_file(raw)
+
+    assert rows[0].name == "Лагман"
+
+
+# --- .xls (старый бинарный формат) — понятная ошибка, а не попытка разобрать -
+
+
+def test_xls_binary_file_gets_a_human_readable_error():
+    ole2_magic = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+    raw = ole2_magic + b"\x00" * 32  # содержимое не важно — формат узнаётся по сигнатуре
+
+    with pytest.raises(MenuImportError) as exc_info:
+        parse_menu_file(raw, filename="меню.xls")
+
+    message = str(exc_info.value)
+    assert "xlsx" in message.casefold()
+
+
+# --- Excel (.xlsx): настоящий файл, шапка не в первой строке, порядок колонок -
+
+
+def _build_xlsx(rows: list[list[object]]) -> bytes:
+    workbook = Workbook()
+    sheet = workbook.active
+    for row in rows:
+        sheet.append(row)
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+def test_parses_real_xlsx_with_header_not_first_reordered_columns_and_odd_spelling():
+    """Требование задания: шапка не в первой строке, колонки в другом порядке,
+    русские заголовки в неожиданном написании — и пустые аллергены остаются None
+    (юридически значимо, см. докстринг app/services/menu_import.py)."""
+    raw = _build_xlsx(
+        [
+            ["Меню чайханы «Дастархан»"],  # преамбула: название заведения
+            [],  # пустая строка
+            # шапка — колонки в другом порядке, формулировки не буквально из наших алиасов
+            ["Выход, гр", "Наименование позиции", "Цена, руб.", "Аллергены (если есть)"],
+            [300, "Лагман", 450, None],  # аллергены пусто -> не проверялось
+            [400, "Плов", 520, "нет"],  # аллергены явно "нет" -> проверено, пусто
+        ]
+    )
+
+    rows = parse_menu_file(raw, filename="меню.xlsx")
+
+    assert len(rows) == 2
+    lagman, plov = rows
+    assert lagman.name == "Лагман"
+    assert lagman.price == Decimal("450")
+    assert lagman.weight_grams == 300
+    assert lagman.allergens is None  # пустая ячейка — данных нет, а не "аллергенов нет"
+
+    assert plov.name == "Плов"
+    assert plov.price == Decimal("520")
+    assert plov.allergens == ()  # явное "нет" — подтверждённый факт
+
+
+def test_xlsx_numeric_price_cell_is_read_without_float_artifacts():
+    """Ячейка цены в Excel обычно число, не текст — не должно быть 450.00000001."""
+    raw = _build_xlsx(
+        [
+            ["название", "цена"],
+            ["Лагман", 450.5],
+        ]
+    )
+
+    row = parse_menu_file(raw)[0]
+
+    assert row.price == Decimal("450.5")
+
+
+def test_xlsx_empty_file_raises_import_error():
+    raw = _build_xlsx([])
+
+    with pytest.raises(MenuImportError):
+        parse_menu_file(raw)
+
+
+def test_xlsx_missing_price_column_error_mentions_it():
+    raw = _build_xlsx([["название", "острота"], ["Лагман", "1"]])
+
+    with pytest.raises(MenuImportError) as exc_info:
+        parse_menu_file(raw)
+
+    assert "цена" in str(exc_info.value)

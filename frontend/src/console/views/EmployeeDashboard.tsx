@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { BookOpen, GraduationCap, LayoutDashboard, MessagesSquare, Radio } from 'lucide-react';
+import { BookOpen, CircleHelp, GraduationCap, LayoutDashboard, MessagesSquare, Radio } from 'lucide-react';
 import WaiterView from '../../views/WaiterView';
+import HelpView from '../../views/HelpView';
 import { Shell } from '../components/Shell';
 import { useStore } from '../store';
 import MyStats from './employee/MyStats';
@@ -8,7 +9,7 @@ import MyDialogs from './employee/MyDialogs';
 import Training from './employee/Training';
 import Knowledge from './Knowledge';
 
-type Tab = 'shift' | 'stats' | 'dialogs' | 'training' | 'knowledge';
+type Tab = 'shift' | 'stats' | 'dialogs' | 'training' | 'knowledge' | 'help';
 
 export default function EmployeeDashboard() {
   // Рация открыта первой: в зале это единственное, что нужно под рукой,
@@ -28,6 +29,7 @@ export default function EmployeeDashboard() {
         { id: 'shift', label: 'Рация и ассистент', icon: Radio },
         { id: 'stats', label: 'Моя смена и KPI', icon: LayoutDashboard },
         { id: 'dialogs', label: profile.labels.interactionPlural, icon: MessagesSquare },
+        { id: 'help', label: 'Как это работает', icon: CircleHelp },
       ],
     },
     {
@@ -49,6 +51,7 @@ export default function EmployeeDashboard() {
       {tab === 'dialogs' && <MyDialogs />}
       {tab === 'training' && <Training />}
       {tab === 'knowledge' && <Knowledge role="employee" />}
+      {tab === 'help' && <HelpView />}
     </Shell>
   );
 }
