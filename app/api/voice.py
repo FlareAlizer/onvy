@@ -93,6 +93,16 @@ async def push_to_talk(
         require_wake_word=always_on,
     )
 
+    # Обращения не было — фраза не наша, и дальше она не идёт.
+    #
+    # В режиме постоянного прослушивания сюда попадает всё, что официант говорит
+    # гостям за столами. Такой разговор не сохраняем, не показываем управляющему
+    # и не возвращаем на телефон: гость согласия не давал. Текст уже отброшен
+    # в handle_voice_query, здесь мы просто не даём ему шанса добраться до
+    # маршрутизации и записи в базу — граница видна на самом краю приложения.
+    if outcome.kind is IntentKind.IGNORED:
+        return VoiceResult(intent=outcome.kind.value)
+
     # Адресат, выбранный на экране, применяется когда во фразе обращения не было.
     # Иначе официант, ткнувший пальцем в повара, всё равно был бы обязан назвать
     # его по имени — а он держит поднос и смотрит на гостя, не на телефон.
@@ -102,11 +112,10 @@ async def push_to_talk(
     if outcome.kind in (IntentKind.SEND_GROUP, IntentKind.SEND_PERSON):
         return await _forward_to_colleagues(outcome, current, db, redis, language)
 
-    if outcome.kind is not IntentKind.IGNORED:
-        await dispatch.save_assistant_query(
-            db, venue_id=current.venue_id, employee_id=current.id, outcome=outcome
-        )
-        await db.commit()
+    await dispatch.save_assistant_query(
+        db, venue_id=current.venue_id, employee_id=current.id, outcome=outcome
+    )
+    await db.commit()
 
     return _to_response(outcome)
 

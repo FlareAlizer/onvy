@@ -33,11 +33,26 @@ _WAKE_VARIANTS = ("онви", "анви", "энви", "онвы", "анвы", "�
 _WAKE_LATIN = frozenset({"onvi", "onvy", "envy", "anvi", "anvy"})
 
 
+_WAKE_PREFIXES = frozenset({"онви", "анви", "энви", "онвы"})
+
+# Насколько длиннее самой основы может быть слово, чтобы всё ещё считаться
+# обращением. Двух букв хватает на падежи («Онвию», «Онвика») и не хватает,
+# чтобы под правило подошло постороннее слово.
+_WAKE_MAX_EXTRA = 2
+
+
 def _is_wake_token(token: str) -> bool:
     if token in _WAKE_LATIN or token in _WAKE_VARIANTS:
         return True
     # «Онвию», «Онвика» — окончание переживём, но «Анвар» не должен пройти.
-    return len(token) >= 4 and token[:4] in {"онви", "анви", "энви", "онвы"}
+    #
+    # Длину ограничиваем жёстко. Раньше правилом была только приставка из
+    # четырёх букв, и под него подходило любое длинное слово: «он выбрал» после
+    # склейки давало «онвыбрал», а это обычная фраза официанта про гостя. При
+    # всегда включённом микрофоне такая фраза считалась обращением к ассистенту,
+    # уезжала в облако и оседала в базе — то есть личный разговор со столом
+    # попадал на экран управляющего.
+    return len(token) <= 4 + _WAKE_MAX_EXTRA and token[:4] in _WAKE_PREFIXES
 
 
 def detect_wake_word(text: str) -> tuple[bool, str]:
@@ -52,8 +67,13 @@ def detect_wake_word(text: str) -> tuple[bool, str]:
         if _is_wake_token(token):
             return True, " ".join(original[index + 1 :]).strip(" ,.!?")
 
+    # Распознавание иногда рвёт имя на два слова («он ви»). Склейку принимаем
+    # только как точное совпадение с вариантом написания: окончания здесь не
+    # прощаем, потому что второе слово в склейке — это чаще всего начало
+    # обычного слова, а не хвост имени.
     for index in range(min(len(tokens), 3) - 1):
-        if _is_wake_token(tokens[index] + tokens[index + 1]):
+        склейка = tokens[index] + tokens[index + 1]
+        if склейка in _WAKE_VARIANTS or склейка in _WAKE_LATIN:
             return True, " ".join(original[index + 2 :]).strip(" ,.!?")
 
     return False, raw
