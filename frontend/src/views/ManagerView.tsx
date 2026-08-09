@@ -5,7 +5,7 @@
 // Как и WaiterView.tsx, экран самодостаточен: сам берёт сессию и сам решает,
 // что делать при выходе — App.tsx ничего в него не прокидывает.
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
   Ban,
   BarChart3,
@@ -17,9 +17,10 @@ import {
   Users,
   WifiOff,
 } from 'lucide-react';
-import { getSession, logoutSession, openCommsSocket, type IncomingMessage } from '../lib/api';
+import { getSession, logoutSession } from '../lib/api';
+import { useComms, type ConnStatus } from '../lib/comms';
 import StopListTab from '../components/manager/StopListTab';
-import ShiftTab, { type FeedEntry } from '../components/manager/ShiftTab';
+import ShiftTab from '../components/manager/ShiftTab';
 import MenuImportTab from '../components/manager/MenuImportTab';
 import MetricsTab from '../components/manager/MetricsTab';
 import TalkTab from '../components/manager/TalkTab';
@@ -46,51 +47,11 @@ type Props = {
 export default function ManagerView({ onExit }: Props = {}) {
   const session = getSession();
   const [tab, setTab] = useState<TabKey>('stop');
-  const [feed, setFeed] = useState<FeedEntry[]>([]);
-  const [wsStatus, setWsStatus] = useState<'connecting' | 'online' | 'lost'>('connecting');
 
-  // Один канал рации на весь кабинет — управляющий "слышит всё" (spec §4),
-  // и лента реплик во вкладке "Смена" должна жить, даже когда открыта другая вкладка.
-  useEffect(() => {
-    let cancelled = false;
-    let socket: WebSocket | null = null;
-    let ping: number | undefined;
-    let retry: number | undefined;
-
-    const connect = async () => {
-      try {
-        socket = await openCommsSocket();
-      } catch {
-        retry = window.setTimeout(connect, 3000);
-        return;
-      }
-      if (cancelled) {
-        socket.close();
-        return;
-      }
-      socket.onopen = () => {
-        setWsStatus('online');
-        ping = window.setInterval(() => socket?.send('ping'), 20000);
-      };
-      socket.onmessage = (event) => {
-        const message = JSON.parse(event.data) as IncomingMessage;
-        setFeed((cur) => [{ ...message, id: crypto.randomUUID(), at: Date.now() }, ...cur].slice(0, 50));
-      };
-      socket.onclose = () => {
-        setWsStatus('lost');
-        window.clearInterval(ping);
-        if (!cancelled) retry = window.setTimeout(connect, 3000);
-      };
-    };
-
-    void connect();
-    return () => {
-      cancelled = true;
-      window.clearInterval(ping);
-      window.clearTimeout(retry);
-      socket?.close();
-    };
-  }, []);
+  // Канал рации живёт в App.tsx, выше кабинета: управляющий слышит смену всегда
+  // (spec §4), а не только пока открыт этот экран. Пока сокет висел здесь, любой
+  // уход в другой раздел кабинета снимал его со смены — см. lib/comms.tsx.
+  const { status: wsStatus, feed } = useComms();
 
   const logout = () => void logoutSession();
 
@@ -141,7 +102,7 @@ export default function ManagerView({ onExit }: Props = {}) {
   );
 }
 
-function ConnBadge({ status }: { status: 'connecting' | 'online' | 'lost' }) {
+function ConnBadge({ status }: { status: ConnStatus }) {
   return (
     <span
       className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium ${

@@ -52,6 +52,51 @@ class TestШина:
 
         assert доставлено == [{"text": "стол пять готов"}]
 
+    async def test_переподключение_не_гасит_новый_сокет(self, redis):
+        """Регрессия: закрытие старого сокета выбрасывало из реестра живой.
+
+        На плохом вайфае телефон переподключается раньше, чем сервер узнаёт о
+        разрыве прошлого соединения. Безусловный remove снимал свежий сокет, а
+        вызывающий следом отписывал его от шины и снимал сотрудника со смены.
+        Наружу это выглядело так: человек числится «на смене» — пинг нового
+        сокета обновляет отметку, — а реплики до него молча не доходят.
+        """
+        registry = ConnectionRegistry()
+        доставлено: list[dict] = []
+
+        class Сокет:
+            def __init__(self, метка: str) -> None:
+                self.метка = метка
+
+            async def send_json(self, payload):
+                доставлено.append({**payload, "кому": self.метка})
+
+        старый, новый = Сокет("старый"), Сокет("новый")
+        registry.add(7, старый)  # type: ignore[arg-type]
+        registry.add(7, новый)  # type: ignore[arg-type]
+
+        # Старое соединение закрывается уже после того, как открылось новое.
+        снят = registry.remove(7, старый)  # type: ignore[arg-type]
+
+        assert снят is False, "старый сокет не должен считаться текущим"
+        assert registry.has(7), "живой сокет обязан остаться в реестре"
+        assert await registry.send(7, {"text": "стол пять готов"})
+        assert доставлено == [{"text": "стол пять готов", "кому": "новый"}]
+
+    async def test_свой_сокет_снимается(self, redis):
+        """Обратная сторона: закрылось текущее соединение — сотрудник ушёл."""
+        registry = ConnectionRegistry()
+
+        class Сокет:
+            async def send_json(self, payload):
+                pass
+
+        сокет = Сокет()
+        registry.add(7, сокет)  # type: ignore[arg-type]
+
+        assert registry.remove(7, сокет) is True  # type: ignore[arg-type]
+        assert not registry.has(7)
+
     async def test_отписка_прекращает_доставку(self, redis):
         registry = ConnectionRegistry()
         bus = CommsBus(redis, registry)

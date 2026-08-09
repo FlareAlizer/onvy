@@ -1,0 +1,66 @@
+# Внешняя проверка живости с сигналом в телеграм.
+#
+# Смысл именно во «внешней»: проверка, запущенная на самом сервере, умирает
+# вместе с ним. Прошлая недоступность длилась сутки, и узнали о ней не от
+# проверки. GitHub Actions — площадка вне сервера, которая у нас уже есть.
+#
+# Что нужно завести один раз в Settings → Secrets and variables → Actions:
+#   секреты:    TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+#   переменная: HEALTH_URL (например https://onvy.space/health)
+#
+# Честно про частоту: расписание Actions даёт не чаще раза в 5 минут и под
+# нагрузкой опаздывает ещё на несколько. Для «узнать раньше, чем позвонят из
+# зала» этого хватает; если нужна минута — тот же scripts/health-watch.sh
+# ставится таймером на ЛЮБУЮ другую машину, см. docs/runbook-deploy.md.
+
+name: Health
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+# Проверки не должны наслаиваться: медленный прогон не отменяем, новый не
+# запускаем — иначе состояние в кэше перезапишется задом наперёд.
+concurrency:
+  group: health
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: /health
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Состояние между прогонами — чтобы сигнал уходил на переходе, а не
+      # каждые 5 минут всю ночь. Ключ уникальный на прогон, восстановление по
+      # префиксу: кэш нельзя перезаписать, но можно положить новый и читать
+      # самый свежий.
+      - name: Забрать прошлое состояние
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .health-state
+          key: health-state-${{ github.run_id }}
+          restore-keys: health-state-
+
+      - name: Проверить
+        id: probe
+        env:
+          HEALTH_URL: ${{ vars.HEALTH_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          STATE_FILE: .health-state/state
+        run: bash scripts/health-watch.sh
+
+      # Сохраняем и когда упало, и когда поднялось: иначе следующий прогон не
+      # узнает о переходе и либо промолчит про аварию, либо повторит сигнал.
+      - name: Запомнить состояние
+        if: always()
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .health-state
+          key: health-state-${{ github.run_id }}

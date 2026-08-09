@@ -1,0 +1,23 @@
+# Дамп Postgres + проверка, что он восстанавливается.
+#
+# Ставится через scripts/install-backup-timer.sh — он подставляет реальный путь
+# репозитория вместо __ONVY_ROOT__ и включает таймер.
+#
+# Два шага в одном юните намеренно: бэкап, который никто не пробовал развернуть,
+# создаёт ложное спокойствие. Если проверка провалилась — падает весь юнит, и это
+# видно в `systemctl status onvy-backup` и в журнале.
+
+[Unit]
+Description=Onvy: дамп Postgres и проверка восстановления
+Documentation=file://__ONVY_ROOT__/docs/runbook-deploy.md
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=__ONVY_ROOT__
+ExecStart=/bin/bash __ONVY_ROOT__/scripts/backup-postgres.sh
+ExecStart=/bin/bash __ONVY_ROOT__/scripts/restore-check.sh
+# Дамп маленькой базы пилота идёт секунды; если завис на десяти минутах — что-то
+# не так, и лучше упасть, чем держать процесс до следующего запуска.
+TimeoutStartSec=600

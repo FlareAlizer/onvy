@@ -15,11 +15,9 @@ import { Radio, Users, WifiOff } from 'lucide-react';
 import { apiPublic } from '../../lib/api';
 import { LoadingState, ErrorState } from '../StateView';
 import { roleLabel, languageLabel } from '../roles';
-import type { IncomingMessage } from '../../lib/api';
+import type { ConnStatus, FeedEntry } from '../../lib/comms';
 
 type EmployeeOption = { id: number; name: string; role: string; language: string };
-
-export type FeedEntry = IncomingMessage & { id: string; at: number };
 
 const ONLINE_WINDOW_MS = 5 * 60_000;
 
@@ -30,7 +28,7 @@ export default function ShiftTab({
 }: {
   venueId: number;
   feed: FeedEntry[];
-  wsStatus: 'connecting' | 'online' | 'lost';
+  wsStatus: ConnStatus;
 }) {
   const [status, setStatus] = useState<'loading' | 'error' | 'ready'>('loading');
   const [roster, setRoster] = useState<EmployeeOption[]>([]);

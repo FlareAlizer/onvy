@@ -147,7 +147,16 @@ async def comms_socket(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     finally:
-        registry.remove(data.employee_id)
-        await bus.detach(data.employee_id)
-        await presence.leave(data.venue_id, data.employee_id)
-        logger.info("Сотрудник %s ушёл со связи", data.employee_id)
+        # Снимаем со смены, только если закрылось ТЕКУЩЕЕ соединение сотрудника.
+        # На плохом вайфае телефон переподключается раньше, чем сервер узнаёт о
+        # разрыве старого сокета, — и безусловная уборка гасила свежее соединение:
+        # человек оставался «на смене» по пингу, но реплики до него не доходили.
+        if registry.remove(data.employee_id, websocket):
+            await bus.detach(data.employee_id)
+            await presence.leave(data.venue_id, data.employee_id)
+            logger.info("Сотрудник %s ушёл со связи", data.employee_id)
+        else:
+            logger.info(
+                "Закрылось прошлое соединение сотрудника %s — он уже переподключился",
+                data.employee_id,
+            )
