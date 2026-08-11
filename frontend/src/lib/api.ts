@@ -41,6 +41,35 @@ export function clearSession(): void {
   localStorage.removeItem(KEY);
 }
 
+// --- Заведение этого телефона -------------------------------------------------
+//
+// Вход по PIN — это экран для смены в зале, и он показывает список сотрудников
+// ДО всякой авторизации. Значит сервер должен знать, чьих сотрудников показать,
+// а спросить не у кого: человек ещё не вошёл.
+//
+// Раньше номер заведения был зашит в сборку константой, и экран у всех показывал
+// одну и ту же чужую смену: сотрудники нового заведения в списке не появлялись
+// вовсе, а имена чужих — появлялись всем.
+//
+// Решение под реальную чайхану: телефон принадлежит заведению и никуда из него
+// не уходит. Управляющий один раз входит на нём по почте — телефон запоминает
+// заведение и дальше отдаёт его смене. Отдельный «код заведения» вводить не
+// нужно, но если телефон настраивают без управляющего, номер можно ввести руками.
+//
+// PIN при этом может совпадать у людей из разных заведений, и это нормально:
+// вход проверяет пару «конкретный сотрудник + его PIN», а не PIN сам по себе.
+const DEVICE_VENUE_KEY = 'onvy_device_venue';
+
+export function getDeviceVenue(): number | null {
+  const raw = localStorage.getItem(DEVICE_VENUE_KEY);
+  const id = Number(raw);
+  return raw && Number.isFinite(id) && id > 0 ? id : null;
+}
+
+export function setDeviceVenue(venueId: number): void {
+  localStorage.setItem(DEVICE_VENUE_KEY, String(venueId));
+}
+
 /**
  * Выйти из аккаунта: погасить токен на сервере, стереть сессию и вернуться на
  * экран входа.
@@ -223,6 +252,9 @@ async function completeLogin(tokens: TokenPairResponse): Promise<Session> {
     language: me.language,
   };
   saveSession(session);
+  // Телефон запоминает заведение вошедшего: дальше смена входит на нём по PIN,
+  // и экран выбора покажет своих, а не чужих.
+  setDeviceVenue(me.venue_id);
   return session;
 }
 
@@ -251,7 +283,11 @@ export async function signupVenue(payload: SignupRequest): Promise<Session> {
   return completeLogin(result);
 }
 
-/** Быстрый вход по PIN — для смены в зале, где почту вводить неудобно. */
+/** Быстрый вход по PIN — для смены в зале, где почту вводить неудобно.
+ *
+ * Сессию собирает completeLogin по ответу /auth/me. Раньше экран входа строил её
+ * сам и подставлял номер заведения из константы сборки — у сотрудника чужой
+ * точки сессия указывала не туда. Кто вошёл и куда относится, знает сервер. */
 export async function loginWithPin(employeeId: number, pin: string): Promise<Session> {
   const tokens = await apiPublic<TokenPairResponse>('/auth/login', {
     method: 'POST',

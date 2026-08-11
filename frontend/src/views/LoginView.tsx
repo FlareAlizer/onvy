@@ -10,12 +10,11 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { ChevronLeft, RotateCcw, Users } from 'lucide-react';
-import { apiPublic, saveSession, type Session } from '../lib/api';
+import { apiPublic, getDeviceVenue, loginWithPin, setDeviceVenue } from '../lib/api';
 import { PinPad } from '../components/PinPad';
 import { LoadingState, ErrorState, EmptyState } from '../components/StateView';
 import { roleLabel, languageLabel } from '../components/roles';
 
-const VENUE_ID = Number(import.meta.env.VITE_VENUE_ID ?? 1);
 const PIN_LENGTH = 4;
 
 type EmployeeOption = {
@@ -39,10 +38,14 @@ export default function LoginView({ onBackToEmail }: Props) {
   const [status, setStatus] = useState<ListStatus>('loading');
   const [employees, setEmployees] = useState<EmployeeOption[]>([]);
   const [selected, setSelected] = useState<EmployeeOption | null>(null);
+  // Заведение этого телефона. Пусто — значит телефон ещё не настроен, и список
+  // сотрудников показывать неоткуда: чужую смену показывать нельзя.
+  const [venueId, setVenueId] = useState<number | null>(() => getDeviceVenue());
 
   const loadEmployees = () => {
+    if (venueId === null) return;
     setStatus('loading');
-    apiPublic<EmployeeOption[]>(`/auth/venues/${VENUE_ID}/employees`)
+    apiPublic<EmployeeOption[]>(`/auth/venues/${venueId}/employees`)
       .then((list) => {
         setEmployees(list);
         setStatus(list.length ? 'ready' : 'empty');
@@ -50,7 +53,22 @@ export default function LoginView({ onBackToEmail }: Props) {
       .catch(() => setStatus('error'));
   };
 
-  useEffect(loadEmployees, []);
+  useEffect(loadEmployees, [venueId]);
+
+  // Телефон не привязан к заведению — просим настроить, а не показываем чужих.
+  if (venueId === null) {
+    return (
+      <Shell onBackToEmail={onBackToEmail}>
+        <SetupStep
+          onReady={(id) => {
+            setDeviceVenue(id);
+            setVenueId(id);
+          }}
+          onBackToEmail={onBackToEmail}
+        />
+      </Shell>
+    );
+  }
 
   if (status === 'loading') {
     return (
@@ -119,6 +137,91 @@ function Shell({
 
 /* ---------- Шаг 1: выбери себя ---------- */
 
+/**
+ * Телефон ещё не знает своего заведения.
+ *
+ * Обычный путь — управляющий один раз входит на этом телефоне по почте, и
+ * заведение запоминается само. Ручной ввод номера оставлен как запасной: телефон
+ * могут настраивать без управляющего, а номер заведения виден ему в кабинете.
+ */
+function SetupStep({
+  onReady,
+  onBackToEmail,
+}: {
+  onReady: (venueId: number) => void;
+  onBackToEmail: () => void;
+}) {
+  const [номер, setНомер] = useState('');
+  const [ошибка, setОшибка] = useState('');
+  const [проверяю, setПроверяю] = useState(false);
+
+  const подтвердить = async () => {
+    const id = Number(номер.trim());
+    if (!Number.isFinite(id) || id <= 0) {
+      setОшибка('Номер заведения — это число из кабинета управляющего.');
+      return;
+    }
+    setПроверяю(true);
+    setОшибка('');
+    try {
+      // Проверяем номер до того, как запомнить: иначе телефон молча привяжется
+      // к несуществующему заведению и покажет пустой список без объяснения.
+      const список = await apiPublic<EmployeeOption[]>(`/auth/venues/${id}/employees`);
+      if (список.length === 0) {
+        setОшибка('В этом заведении ещё нет сотрудников. Проверьте номер.');
+        return;
+      }
+      onReady(id);
+    } catch {
+      setОшибка('Не получилось проверить номер. Проверьте вайфай.');
+    } finally {
+      setПроверяю(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-1 flex-col">
+      <h1 className="mb-1 text-2xl font-bold tracking-tight">Телефон ещё не настроен</h1>
+      <p className="mb-6 text-base leading-relaxed text-stone-400">
+        Чтобы смена входила по PIN, телефон должен знать своё заведение. Проще всего —
+        управляющему один раз войти здесь по почте: заведение запомнится само.
+      </p>
+
+      <button
+        onClick={onBackToEmail}
+        style={{ minHeight: 52 }}
+        className="mb-8 rounded-2xl bg-stone-50 px-6 text-base font-semibold text-stone-950"
+      >
+        Войти по почте
+      </button>
+
+      <p className="mb-2 text-sm font-medium text-stone-500">Или введите номер заведения</p>
+      <div className="flex gap-2">
+        <input
+          value={номер}
+          onChange={(e) => setНомер(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && void подтвердить()}
+          inputMode="numeric"
+          placeholder="Например, 2"
+          className="min-w-0 flex-1 rounded-2xl bg-stone-900 px-4 py-3.5 text-base outline-none ring-1 ring-stone-800 focus:ring-2 focus:ring-emerald-500"
+        />
+        <button
+          onClick={() => void подтвердить()}
+          disabled={проверяю || !номер.trim()}
+          style={{ minHeight: 52, minWidth: 52 }}
+          className="shrink-0 rounded-2xl bg-stone-800 px-5 text-base font-semibold text-stone-100 disabled:text-stone-600"
+        >
+          {проверяю ? '…' : 'Готово'}
+        </button>
+      </div>
+      {ошибка && <p className="mt-3 text-sm text-amber-300">{ошибка}</p>}
+      <p className="mt-3 text-xs leading-relaxed text-stone-500">
+        Номер заведения управляющий видит в своём кабинете. Он нужен один раз на телефон.
+      </p>
+    </div>
+  );
+}
+
 function PickStep({
   employees,
   onPick,
@@ -162,7 +265,7 @@ function initials(name: string): string {
 /* ---------- Шаг 2: PIN ---------- */
 
 type LoginOutcome =
-  | { ok: true; tokens: { access_token: string; refresh_token: string } }
+  | { ok: true }
   | { ok: false; kind: 'invalid' | 'locked' | 'network'; message: string; retryAfterSeconds?: number };
 
 async function submitLogin(employeeId: number, pin: string): Promise<LoginOutcome> {
@@ -195,7 +298,9 @@ async function submitLogin(employeeId: number, pin: string): Promise<LoginOutcom
     return { ok: false, kind: 'invalid', message: 'Не тот PIN, попробуйте ещё раз' };
   }
 
-  return { ok: true, tokens: await resp.json() };
+  // Дальше сессию собирает completeLogin по /auth/me — здесь только факт успеха.
+  await loginWithPin(employeeId, pin);
+  return { ok: true };
 }
 
 function formatWait(seconds: number): string {
@@ -234,16 +339,10 @@ function PinStep({ employee, onBack }: { employee: EmployeeOption; onBack: () =>
       if (attemptRef.current !== attempt) return; // сгорела гонка с новым набором PIN
       setSubmitting(false);
       if (result.ok) {
-        const session: Session = {
-          accessToken: result.tokens.access_token,
-          refreshToken: result.tokens.refresh_token,
-          employeeId: employee.id,
-          venueId: VENUE_ID,
-          role: employee.role,
-          name: employee.name,
-          language: employee.language,
-        };
-        saveSession(session);
+        // Сессию собирает completeLogin по ответу /auth/me: кто вошёл и к какой
+        // точке относится, знает сервер. Раньше это заполнялось здесь руками, и
+        // номер заведения брался из константы сборки — у сотрудника чужой точки
+        // сессия указывала не туда.
         location.reload();
         return;
       }
