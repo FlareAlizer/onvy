@@ -7,6 +7,7 @@
 
 import base64
 import logging
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
 from redis.asyncio import Redis
@@ -133,9 +134,14 @@ async def comms_socket(websocket: WebSocket) -> None:
     bus = get_bus(redis)
 
     await websocket.accept()
+    # Токен этого соединения. Реестр сокетов знает только про свой процесс, а
+    # присутствие общее на все реплики: без токена закрытие сокета на одной
+    # реплике снимало бы со смены человека, который уже переподключился к
+    # другой (см. Presence.leave).
+    connection_id = uuid4().hex
     registry.add(data.employee_id, websocket)
     await bus.attach(data.employee_id)
-    await presence.touch(data.venue_id, data.employee_id)
+    await presence.join(data.venue_id, data.employee_id, connection_id)
     logger.info("Сотрудник %s на связи", data.employee_id)
 
     try:
@@ -147,13 +153,20 @@ async def comms_socket(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     finally:
-        # Снимаем со смены, только если закрылось ТЕКУЩЕЕ соединение сотрудника.
-        # На плохом вайфае телефон переподключается раньше, чем сервер узнаёт о
-        # разрыве старого сокета, — и безусловная уборка гасила свежее соединение:
-        # человек оставался «на смене» по пингу, но реплики до него не доходили.
+        # Уборка раздельная, потому что реестр сокетов локален для процесса, а
+        # присутствие — общее на все реплики.
+        #
+        # Отписка от шины — по локальному реестру: закрылся наш сокет, значит
+        # этот процесс сотрудника больше не обслуживает.
         if registry.remove(data.employee_id, websocket):
             await bus.detach(data.employee_id)
-            await presence.leave(data.venue_id, data.employee_id)
+        # Со смены снимаем только владельца текущего токена. На плохом вайфае
+        # телефон переподключается раньше, чем сервер узнаёт о разрыве старого
+        # сокета, — и безусловная уборка гасила свежее соединение: человек
+        # оставался «на смене» по пингу, но реплики до него не доходили. Если
+        # переподключение попало на другую реплику, локальный реестр этого не
+        # видит вовсе — ловит только токен.
+        if await presence.leave(data.venue_id, data.employee_id, connection_id):
             logger.info("Сотрудник %s ушёл со связи", data.employee_id)
         else:
             logger.info(

@@ -36,6 +36,16 @@ def _online_key(venue_id: int) -> str:
     return f"venue:{venue_id}:online"
 
 
+def _connection_key(employee_id: int) -> str:
+    return f"presence:conn:{employee_id}"
+
+
+# Сколько живёт отметка о том, КАКОЕ соединение сейчас держит сотрудника.
+# Заметно больше срока присутствия: ключ нужен только чтобы отличить своё
+# соединение от чужого, и переживать он обязан любую паузу между пингами.
+CONNECTION_TTL_SECONDS = ONLINE_TTL_SECONDS * 4
+
+
 class ConnectionRegistry:
     """Живые сокеты этого процесса."""
 
@@ -83,17 +93,75 @@ class ConnectionRegistry:
 
 
 class Presence:
-    """Кто на смене, по данным Redis, а не по памяти процесса."""
+    """Кто на смене, по данным Redis, а не по памяти процесса.
+
+    Присутствие общее на все процессы, поэтому и «чьё сейчас соединение» обязано
+    быть общим. Реестр сокетов (ConnectionRegistry) знает только про свой
+    процесс: когда телефон переподключается на ДРУГУЮ реплику, старый процесс
+    видит закрытие собственного сокета как своё и снимает человека со смены —
+    хотя тот уже на связи через соседа. Поэтому у каждого соединения есть токен,
+    он же лежит в Redis, и `leave` срабатывает только для владельца токена.
+    """
 
     def __init__(self, redis: Redis) -> None:
         self._redis = redis
 
+    async def join(self, venue_id: int, employee_id: int, connection_id: str) -> None:
+        """Отметить сотрудника на смене и запомнить, какое соединение его держит.
+
+        Токен пишется безусловно: самое свежее соединение и есть живое, а старое
+        к этому моменту либо уже закрыто, либо закроется следом — и своим
+        закрытием ничего не испортит, потому что токен в Redis уже не его.
+        """
+        await self._redis.set(
+            _connection_key(employee_id), connection_id, ex=CONNECTION_TTL_SECONDS
+        )
+        await self.touch(venue_id, employee_id)
+
     async def touch(self, venue_id: int, employee_id: int) -> None:
         """Отметить сотрудника живым. Вызывается при подключении и на каждый пинг."""
         await self._redis.zadd(_online_key(venue_id), {str(employee_id): time.time()})
+        # Продлеваем жизнь токена вместе с присутствием: перезаписывать его здесь
+        # нельзя (пинг может прийти от старого сокета), а продлить — безопасно,
+        # значение всё равно принадлежит самому свежему соединению.
+        await self._redis.expire(_connection_key(employee_id), CONNECTION_TTL_SECONDS)
 
-    async def leave(self, venue_id: int, employee_id: int) -> None:
-        await self._redis.zrem(_online_key(venue_id), str(employee_id))
+    async def leave(
+        self, venue_id: int, employee_id: int, connection_id: str | None = None
+    ) -> bool:
+        """Снять со смены. Возвращает True, если действительно сняли.
+
+        `connection_id` обязателен везде, где соединение закрывается: снимаем
+        только если со смены уходит ВЛАДЕЛЕЦ текущего токена. Иначе закрытие
+        старого сокета выбрасывало бы со смены человека, который секунду назад
+        переподключился — в том числе на другую реплику, где локальный реестр
+        сокетов о нём ничего не знает. Наружу это выглядит так: телефон на
+        связи, пинги идут, а реплики не доходят, потому что в списке онлайна
+        человека нет.
+
+        Проверка и снятие идут одной транзакцией (WATCH + MULTI): между чтением
+        токена и удалением не должно поместиться переподключение.
+        """
+        online_key = _online_key(venue_id)
+        conn_key = _connection_key(employee_id)
+
+        if connection_id is None:
+            await self._redis.zrem(online_key, str(employee_id))
+            await self._redis.delete(conn_key)
+            return True
+
+        async def _снять(pipe) -> bool:
+            current = await pipe.get(conn_key)
+            if current is not None and current != connection_id:
+                return False  # уже переподключился — со смены не снимаем
+            pipe.multi()
+            pipe.zrem(online_key, str(employee_id))
+            pipe.delete(conn_key)
+            return True
+
+        return bool(
+            await self._redis.transaction(_снять, conn_key, value_from_callable=True)
+        )
 
     async def online(self, venue_id: int) -> set[int]:
         """Кто на смене сейчас. Заодно подчищает протухшие отметки."""

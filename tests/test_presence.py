@@ -142,3 +142,54 @@ class TestПрисутствие:
 
         assert await presence.online(1) == {1}
         assert await presence.online(2) == {2}
+
+
+class TestПереподключениеНаДругуюРеплику:
+    """Реестр сокетов локален для процесса, присутствие — общее на все реплики.
+
+    Регрессия: телефон переподключался на соседнюю реплику, старый процесс видел
+    закрытие СВОЕГО сокета как закрытие текущего соединения и снимал человека со
+    смены. Наружу — худший из возможных видов отказа: телефон на связи, пинги
+    идут, а реплики не доходят, потому что в списке онлайна человека нет.
+    """
+
+    async def test_старое_соединение_не_снимает_переподключившегося(self, redis):
+        presence = Presence(redis)
+
+        # Реплика A: сотрудник вышел на смену.
+        await presence.join(venue_id=1, employee_id=42, connection_id="реплика-A")
+        # Реплика B: тот же телефон переподключился, пока A ещё не знает о разрыве.
+        await presence.join(venue_id=1, employee_id=42, connection_id="реплика-B")
+
+        # И только теперь до A доходит закрытие её сокета.
+        снят = await presence.leave(
+            venue_id=1, employee_id=42, connection_id="реплика-A"
+        )
+
+        assert снят is False, "чужое соединение не снимает со смены"
+        assert await presence.online(1) == {42}, "живой телефон обязан остаться на смене"
+
+    async def test_владелец_текущего_соединения_снимается(self, redis):
+        """Обратная сторона: ушёл тот, кто держал смену, — и смена закрыта."""
+        presence = Presence(redis)
+        await presence.join(venue_id=1, employee_id=42, connection_id="реплика-B")
+
+        снят = await presence.leave(
+            venue_id=1, employee_id=42, connection_id="реплика-B"
+        )
+
+        assert снят is True
+        assert await presence.online(1) == set()
+
+    async def test_пинг_старого_сокета_не_перехватывает_смену(self, redis):
+        """Старый сокет ещё жив и шлёт пинг: продлить присутствие он вправе,
+        а вот забрать соединение себе — нет, иначе уход нового снова разъедется
+        с реальностью."""
+        presence = Presence(redis)
+        await presence.join(venue_id=1, employee_id=42, connection_id="реплика-A")
+        await presence.join(venue_id=1, employee_id=42, connection_id="реплика-B")
+
+        await presence.touch(venue_id=1, employee_id=42)  # пинг от старого сокета
+
+        assert await presence.leave(1, 42, "реплика-A") is False
+        assert await presence.leave(1, 42, "реплика-B") is True
