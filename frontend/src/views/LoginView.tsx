@@ -4,7 +4,9 @@
 //
 // Экран сам управляет своей сессией (как WaiterView.tsx управляет своей):
 // после успешного входа сохраняет сессию и перечитывает страницу — App.tsx
-// не нуждается в колбэке, просто перечитывает getSession() при следующем рендере.
+// не нуждается в колбэке для входа, просто перечитывает getSession() при
+// следующем рендере. Колбэк нужен только для одного: вернуться на вход по
+// почте, если сюда попал управляющий, а не сотрудник смены.
 
 import { useEffect, useRef, useState } from 'react';
 import { ChevronLeft, RotateCcw, Users } from 'lucide-react';
@@ -25,7 +27,15 @@ type EmployeeOption = {
 
 type ListStatus = 'loading' | 'error' | 'empty' | 'ready';
 
-export default function LoginView() {
+type Props = {
+  /** Вернуться на вход по почте — сюда ведёт единственный путь назад с этого
+   *  экрана, кроме выбора сотрудника: без него человек, попавший сюда по
+   *  ошибке (это вход для смены в зале, а не для управляющего), был бы
+   *  заперт и мог выйти только перезагрузкой страницы. */
+  onBackToEmail: () => void;
+};
+
+export default function LoginView({ onBackToEmail }: Props) {
   const [status, setStatus] = useState<ListStatus>('loading');
   const [employees, setEmployees] = useState<EmployeeOption[]>([]);
   const [selected, setSelected] = useState<EmployeeOption | null>(null);
@@ -44,7 +54,7 @@ export default function LoginView() {
 
   if (status === 'loading') {
     return (
-      <Shell>
+      <Shell onBackToEmail={onBackToEmail}>
         <LoadingState label="Загружаю список сотрудников…" />
       </Shell>
     );
@@ -52,7 +62,7 @@ export default function LoginView() {
 
   if (status === 'error') {
     return (
-      <Shell>
+      <Shell onBackToEmail={onBackToEmail}>
         <ErrorState
           message="Не удалось загрузить список сотрудников. Проверьте вайфай и попробуйте ещё раз."
           onRetry={loadEmployees}
@@ -63,7 +73,7 @@ export default function LoginView() {
 
   if (status === 'empty') {
     return (
-      <Shell>
+      <Shell onBackToEmail={onBackToEmail}>
         <EmptyState
           icon={<Users size={26} />}
           title="Сотрудников пока нет"
@@ -74,7 +84,7 @@ export default function LoginView() {
   }
 
   return (
-    <Shell>
+    <Shell onBackToEmail={onBackToEmail}>
       {selected ? (
         <PinStep employee={selected} onBack={() => setSelected(null)} />
       ) : (
@@ -84,11 +94,23 @@ export default function LoginView() {
   );
 }
 
-function Shell({ children }: { children: React.ReactNode }) {
+function Shell({
+  children,
+  onBackToEmail,
+}: {
+  children: React.ReactNode;
+  onBackToEmail: () => void;
+}) {
   return (
     <div className="flex h-dvh w-full flex-col bg-stone-950 text-stone-50">
-      <header className="px-6 pt-8 pb-2">
+      <header className="flex items-center justify-between px-6 pt-8 pb-2">
         <span className="text-sm font-semibold uppercase tracking-widest text-stone-500">Onvy</span>
+        <button
+          onClick={onBackToEmail}
+          className="text-sm font-medium text-stone-400 active:text-stone-200"
+        >
+          Я управляющий
+        </button>
       </header>
       <div className="flex flex-1 flex-col px-6 pb-8">{children}</div>
     </div>

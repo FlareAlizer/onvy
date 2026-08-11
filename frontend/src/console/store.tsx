@@ -7,10 +7,10 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { logoutSession } from '../lib/api';
-import { accountFromSession, emptyData, meFromSession } from './emptyState';
-import { getProfile, type IndustryProfile } from './industryProfiles';
-import type { Account, AppData, Employee, Kpi, ManagerFocus, Role, Test } from './types';
+import { fetchStaff, getSession, logoutSession, type KpiMetric } from '../lib/api';
+import { accountFromSession, emptyData, employeeFromStaff, meFromSession } from './emptyState';
+import { getProfile, type IndustryProfile, type MetricDef } from './industryProfiles';
+import type { Account, AppData, Employee, ManagerFocus, Role, Test } from './types';
 
 // Версия ключа поднята намеренно: у всех, кто открывал кабинет раньше, в браузере
 // лежит демо-пространство с выдуманными цифрами. Со старым ключом оно бы
@@ -69,6 +69,42 @@ export const FOCUS_META: Record<
   },
 };
 
+/**
+ * Метрики, по которым управляющий реально может ставить KPI — дословно
+ * app/db/models/enums.py KPI_METRICS. Выручка, средний чек и конверсия сюда
+ * не входят: без кассовой интеграции их не из чего посчитать, а "цель" без
+ * источника — это враньё управляющему, а не показатель.
+ */
+export const KPI_METRIC_META: Record<KpiMetric, MetricDef> = {
+  dialogs: {
+    key: 'dialogs',
+    label: 'Диалоги',
+    unit: 'count',
+    hint: 'Сколько обращений клиентов сотрудник обработал за период',
+  },
+  response_sec: {
+    key: 'response_sec',
+    label: 'Скорость ответа',
+    unit: 'sec',
+    lowerIsBetter: true,
+    hint: 'Среднее время до ответа клиенту — цель не превышать значение',
+  },
+  autonomy: {
+    key: 'autonomy',
+    label: 'Самостоятельность',
+    unit: 'pct',
+    hint: 'Доля обращений, закрытых без обращения за помощью к коллегам',
+  },
+  help_requests: {
+    key: 'help_requests',
+    label: 'Обращения за помощью',
+    unit: 'count',
+    lowerIsBetter: true,
+    hint: 'Сколько раз за период потребовалась помощь коллег — цель не превышать значение',
+  },
+};
+
+export const KPI_METRIC_ORDER: KpiMetric[] = ['dialogs', 'response_sec', 'autonomy', 'help_requests'];
 
 interface StoreValue {
   data: AppData;
@@ -78,9 +114,10 @@ interface StoreValue {
   me: Employee | null;
   /** Название заведения из настоящей сессии — подпись рабочего пространства. */
   venueName: string;
+  /** Смена уже приехала с сервера. Пока false, пустой список ещё ничего не
+   *  значит: экраны не должны звать заводить людей, которые, может быть, есть. */
+  staffLoaded: boolean;
   logout: () => void;
-  setKpi: (kpi: Omit<Kpi, 'id'>) => void;
-  removeKpi: (id: string) => void;
   addTest: (test: Omit<Test, 'id' | 'createdAt' | 'results'>) => Test;
   assignTest: (testId: string, employeeIds: string[]) => void;
   recordTestResult: (testId: string, employeeId: string, score: number) => void;
@@ -132,29 +169,40 @@ export function StoreProvider({
 
   const profile = useMemo(() => getProfile(data.company?.industry), [data.company?.industry]);
 
+  /**
+   * Смена — из базы платформы, один раз при открытии кабинета.
+   *
+   * До этого `data.employees` не наполнялся ничем: список брался из пустого
+   * локального хранилища и был пуст ВСЕГДА, даже у заведения с семью людьми.
+   * Наружу это выглядело так, будто новое заведение и работающее ничем не
+   * отличаются, а поставить цель подчинённому было физически некому.
+   *
+   * Отказ не роняет кабинет: остальные разделы (меню, стоп-лист, рация) от
+   * этого списка не зависят и должны открыться даже когда сеть моргнула.
+   */
+  const [штатЗагружен, setШтатЗагружен] = useState(false);
+  useEffect(() => {
+    const venueId = getSession()?.venueId;
+    if (!identity || !venueId) return;
+    let отменено = false;
+    fetchStaff(venueId)
+      .then((смена) => {
+        if (отменено) return;
+        setData((d) => ({ ...d, employees: смена.map(employeeFromStaff) }));
+        setШтатЗагружен(true);
+      })
+      .catch(() => {
+        if (!отменено) setШтатЗагружен(true);
+      });
+    return () => {
+      отменено = true;
+    };
+  }, [identity?.employeeId]);
+
   // Выход из кабинета — это выход из платформы: гасим токен на сервере и
   // возвращаемся на экран входа.
   const logout = useCallback(() => void logoutSession(), []);
 
-
-  const setKpi = useCallback<StoreValue['setKpi']>((kpi) => {
-    setData((d) => {
-      const existing = d.kpis.find(
-        (k) => k.employeeId === kpi.employeeId && k.metric === kpi.metric && k.period === kpi.period,
-      );
-      if (existing) {
-        return {
-          ...d,
-          kpis: d.kpis.map((k) => (k.id === existing.id ? { ...existing, ...kpi } : k)),
-        };
-      }
-      return { ...d, kpis: [...d.kpis, { ...kpi, id: uid('k') }] };
-    });
-  }, []);
-
-  const removeKpi = useCallback<StoreValue['removeKpi']>((id) => {
-    setData((d) => ({ ...d, kpis: d.kpis.filter((k) => k.id !== id) }));
-  }, []);
 
   const addTest = useCallback<StoreValue['addTest']>((test) => {
     const created: Test = {
@@ -229,12 +277,11 @@ export function StoreProvider({
       session,
       me,
       venueName: identity?.venueName ?? '',
+      staffLoaded: штатЗагружен,
       focus,
       setFocus,
       promotePractice,
       logout,
-      setKpi,
-      removeKpi,
       addTest,
       assignTest,
       recordTestResult,
@@ -245,12 +292,11 @@ export function StoreProvider({
       session,
       me,
       identity?.venueName,
+      штатЗагружен,
       focus,
       setFocus,
       promotePractice,
       logout,
-      setKpi,
-      removeKpi,
       addTest,
       assignTest,
       recordTestResult,

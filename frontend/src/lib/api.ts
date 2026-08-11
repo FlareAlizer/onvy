@@ -330,3 +330,86 @@ export type IncomingMessage = {
 export function playAudio(base64: string, mime = 'audio/mpeg'): Promise<void> {
   return new Audio(`data:${mime};base64,${base64}`).play().catch(() => undefined);
 }
+
+// --- KPI (app/api/kpi.py) -------------------------------------------------
+//
+/** Сотрудник точки — дословно app/schemas/staff.py EmployeeOut. */
+export type StaffMember = {
+  id: number;
+  name: string;
+  nickname: string | null;
+  role: string;
+  language: string;
+  is_active: boolean;
+  hired_at: string;
+};
+
+/**
+ * Смена точки. Управляющий в списке есть — он такой же сотрудник, и цель себе
+ * ставит через тот же список.
+ *
+ * До этого кабинет ни разу не спрашивал у сервера, кто в смене: список брался
+ * из пустого локального хранилища и был пуст ВСЕГДА, даже у заведения с полным
+ * штатом. Из-за этого раздел «Сотрудники и KPI» выглядел одинаково у нового
+ * заведения и у работающего — и поставить цель подчинённому было некому.
+ */
+export function fetchStaff(venueId: number): Promise<StaffMember[]> {
+  return api<StaffMember[]>(`/venues/${venueId}/staff`);
+}
+
+// Метрики, которые Onvy реально считает — app/db/models/enums.py KPI_METRICS.
+// Выручка, средний чек и конверсия сюда сознательно не входят: без интеграции
+// с кассой их не из чего посчитать, а цель без источника — это ложь управляющему.
+
+export type KpiMetric = 'dialogs' | 'response_sec' | 'autonomy' | 'help_requests';
+export type KpiPeriod = 'day' | 'week' | 'month';
+
+export type KpiSetIn = {
+  metric: KpiMetric;
+  /** Decimal на бэкенде — тем же способом, что и цены меню, отдаём как есть. */
+  target: number;
+  period: KpiPeriod;
+  note?: string;
+};
+
+/** Дословно app/schemas/kpi.py KpiOut. current/progress_percent — null значит
+ *  "по этой метрике за окно ещё нет данных", а не 0: показывать нужно прочерк. */
+export type KpiOut = {
+  id: number;
+  employee_id: number;
+  metric: string;
+  target: string | number;
+  current: number | null;
+  progress_percent: number | null;
+  period: KpiPeriod;
+  period_start: string;
+  period_end: string;
+  set_by_employee_id: number;
+  note: string | null;
+};
+
+/** Поставить/обновить цель одному сотруднику (управляющий может и себе — он тоже сотрудник точки). */
+export function setEmployeeKpi(venueId: number, employeeId: number, payload: KpiSetIn): Promise<KpiOut> {
+  return api<KpiOut>(`/venues/${venueId}/employees/${employeeId}/kpi`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+/** Та же цель — сразу всем активным сотрудникам точки. */
+export function setKpiForAllEmployees(venueId: number, payload: KpiSetIn): Promise<KpiOut[]> {
+  return api<KpiOut[]>(`/venues/${venueId}/kpi/bulk`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+/** Все цели точки — кабинет руководителя. */
+export function fetchVenueKpis(venueId: number): Promise<KpiOut[]> {
+  return api<KpiOut[]>(`/venues/${venueId}/kpi`);
+}
+
+/** Цели одного сотрудника — свои видит он сам, чужие только управляющий. */
+export function fetchEmployeeKpis(venueId: number, employeeId: number): Promise<KpiOut[]> {
+  return api<KpiOut[]>(`/venues/${venueId}/employees/${employeeId}/kpi`);
+}

@@ -23,7 +23,7 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>('email');
 
   if (!session) {
-    if (screen === 'pin') return <LoginView />;
+    if (screen === 'pin') return <LoginView onBackToEmail={() => setScreen('email')} />;
     if (screen === 'signup') return <SignupView onBackToLogin={() => setScreen('email')} />;
     return (
       <EmailLoginView

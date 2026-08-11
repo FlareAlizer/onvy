@@ -1,21 +1,45 @@
-﻿import { useMemo } from 'react';
-import { Gauge, GraduationCap, HandHelping, Target, TriangleAlert } from 'lucide-react';
+﻿import { useEffect, useMemo, useState } from 'react';
+import { FileUp, Gauge, GraduationCap, HandHelping, IdCard, TriangleAlert } from 'lucide-react';
 import { useStore } from '../../store';
 import { RopBadgePanel } from '../../components/BadgePanel';
 import { PageHead } from '../../components/Shell';
-import { Card, Chip, EmptyState, Progress, SectionHead } from '../../components/ui';
+import { Card, Chip, Progress, SectionHead } from '../../components/ui';
 import { ChartCard, Donut, RankBars, StatTile, TrendChart } from '../../components/charts';
 import CountUp from '../../components/CountUp';
 import { lastDays, money, num, pct, plural } from '../../lib/format';
 import { employeeMetric, formatMetric, kpiProgress, kpiReached } from '../../lib/metrics';
 import { findMetric } from '../../industryProfiles';
+import { fetchVenueKpis, getSession, type KpiOut } from '../../../lib/api';
+import { LoadingState } from '../../../components/StateView';
 
 const EXTERNAL_NOTE = 'Демо-данные · требуется интеграция с учётной системой';
 
 export default function Overview({ onGoTo }: { onGoTo: (tab: string) => void }) {
-  const { data, session, profile } = useStore();
+  const { data, session, profile, staffLoaded } = useStore();
   const L = profile.labels;
-  const { employees, points, dialogs, kpis } = data;
+  const { employees, points, dialogs } = data;
+
+  // Цели — из настоящего API, а не из локального хранилища. Раньше их писала
+  // сюда же консоль, «поставив» цель только в памяти браузера; когда фальшивую
+  // запись убрали, эта плашка осталась бы навсегда нулевой и врала бы тишиной:
+  // цели на сервере есть, а управляющий видит «0 назначено».
+  const [kpis, setKpis] = useState<KpiOut[]>([]);
+  useEffect(() => {
+    const venueId = getSession()?.venueId;
+    if (!venueId) return;
+    let отменено = false;
+    fetchVenueKpis(venueId)
+      .then((список) => {
+        if (!отменено) setKpis(список);
+      })
+      .catch(() => {
+        // Плашка целей — не тот экран, ради которого стоит показывать ошибку:
+        // остальной дашборд полезен и без неё.
+      });
+    return () => {
+      отменено = true;
+    };
+  }, []);
 
   const totals = useMemo(() => {
     const revenue = employees.reduce((a, e) => a + e.stats.revenue, 0);
@@ -54,15 +78,22 @@ export default function Overview({ onGoTo }: { onGoTo: (tab: string) => void }) 
   );
 
   const kpiHealth = useMemo(() => {
-    if (kpis.length === 0) return { done: 0, risk: 0, share: 0 };
+    // Цель, по которой ещё нет данных за окно (current === null), не считается
+    // ни выполненной, ни провальной: её просто нечем измерить. Складывать её с
+    // провалами — значит показать управляющему риск там, где сегодня ещё никто
+    // не работал. Долю считаем от измеримых, а не от всех.
+    const измеримые = kpis.filter((k) => k.current !== null);
+    if (измеримые.length === 0) return { done: 0, risk: 0, share: 0, всего: kpis.length };
     let done = 0;
     let risk = 0;
-    kpis.forEach((k) => {
+    измеримые.forEach((k) => {
       const def = findMetric(profile, k.metric);
-      if (kpiReached(def, k.current, k.target)) done += 1;
-      else if (kpiProgress(def, k.current, k.target) < 70) risk += 1;
+      const факт = k.current as number;
+      const цель = Number(k.target);
+      if (kpiReached(def, факт, цель)) done += 1;
+      else if (kpiProgress(def, факт, цель) < 70) risk += 1;
     });
-    return { done, risk, share: (done / kpis.length) * 100 };
+    return { done, risk, share: (done / измеримые.length) * 100, всего: kpis.length };
   }, [kpis, profile]);
 
   const alerts = useMemo(() => {
@@ -105,26 +136,56 @@ export default function Overview({ onGoTo }: { onGoTo: (tab: string) => void }) 
     consult: dialogs.filter((d) => d.outcome === 'consult').length,
   };
 
+  // Пока смена не приехала с сервера, пустой список ничего не значит — звать
+  // заводить людей, которые, возможно, уже есть, было бы неправдой.
+  if (!staffLoaded) return <LoadingState label="Загружаю кабинет…" />;
+
   if (employees.length === 0) {
     return (
       <>
         <PageHead
           title={`Здравствуйте, ${session?.name.split(' ')[0] ?? ''}`}
-          subtitle="Показатели считаются по настоящим сменам — придуманных цифр здесь не будет."
+          subtitle="Кабинет заведён. Осталось два шага, и Onvy начнёт работать в зале."
         />
         <RopBadgePanel />
-        <div className="mt-6">
-          <EmptyState
-            icon={<Target size={22} />}
-            title="Данных пока нет"
-            hint={`Заведите смену в разделе «Состав и доступы»: там выдаются PIN и пароли. После первых смен здесь появятся показатели и разбор ${L.interactionGenitivePlural}.`}
-            action={
-              <button type="button" className="console-btn-primary" onClick={() => onGoTo('staff')}>
-                Состав и доступы
-              </button>
-            }
-          />
-        </div>
+
+        <section className="mt-6 grid gap-4 sm:grid-cols-2">
+          <Card className="flex flex-col p-5">
+            <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-lg bg-brand-50 text-brand-700">
+              <FileUp size={20} />
+            </div>
+            <h3 className="text-[15px] font-semibold text-ink">Шаг 1. Загрузите меню</h3>
+            <p className="mt-1.5 flex-1 text-[13px] text-slate-500">
+              Файл Excel или CSV из вашей учётной системы — колонки и порядок не важны, импорт
+              разберёт название, категорию и цену сам.
+            </p>
+            <button
+              type="button"
+              className="console-btn-primary mt-4 self-start"
+              onClick={() => onGoTo('live')}
+            >
+              Загрузить меню
+            </button>
+          </Card>
+
+          <Card className="flex flex-col p-5">
+            <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-lg bg-brand-50 text-brand-700">
+              <IdCard size={20} />
+            </div>
+            <h3 className="text-[15px] font-semibold text-ink">Шаг 2. Заведите смену</h3>
+            <p className="mt-1.5 flex-1 text-[13px] text-slate-500">
+              Добавьте {L.employeePlural.toLowerCase()} — каждому сразу выдаётся свой PIN для входа
+              в зале.
+            </p>
+            <button
+              type="button"
+              className="console-btn-primary mt-4 self-start"
+              onClick={() => onGoTo('roster')}
+            >
+              Состав и доступы
+            </button>
+          </Card>
+        </section>
       </>
     );
   }

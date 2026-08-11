@@ -1,15 +1,18 @@
-﻿import {
+﻿import { useEffect, useState } from 'react';
+import {
+  AlertTriangle,
   Award,
   BookOpen,
   Flame,
   Gauge,
   GraduationCap,
   HandHelping,
+  Loader2,
   MessageSquareQuote,
   Target,
   TrendingUp,
 } from 'lucide-react';
-import { useStore } from '../../store';
+import { useStore, KPI_METRIC_META } from '../../store';
 import { EmployeeBadgePanel } from '../../components/BadgePanel';
 import { PageHead } from '../../components/Shell';
 import { Card, Chip, EmptyState, Progress, SectionHead } from '../../components/ui';
@@ -17,16 +20,30 @@ import { ChartCard, RankBars, StatTile, TrendChart } from '../../components/char
 import CountUp from '../../components/CountUp';
 import { lastDays, money, num, pct, plural, times } from '../../lib/format';
 import { employeeMetric, formatMetric, kpiProgress, kpiReached } from '../../lib/metrics';
-import { findMetric } from '../../industryProfiles';
 import { PERIOD_LABEL } from '../../emptyState';
+import { fetchEmployeeKpis, getSession, type KpiMetric, type KpiOut } from '../../../lib/api';
 
 export default function MyStats({ onOpenTraining }: { onOpenTraining: () => void }) {
   const { me, data, profile } = useStore();
   const L = profile.labels;
+  const [myKpis, setMyKpis] = useState<KpiOut[] | null>(null);
+  const [kpiError, setKpiError] = useState<string | null>(null);
+
+  // Свои цели — из настоящего API, не из локальной догадки: только там
+  // прогресс посчитан по реальным сменам (app/services/stats.py).
+  useEffect(() => {
+    if (!me) return;
+    const venueId = getSession()?.venueId;
+    if (!venueId) return;
+    setMyKpis(null);
+    setKpiError(null);
+    fetchEmployeeKpis(venueId, Number(me.id))
+      .then(setMyKpis)
+      .catch(() => setKpiError('Не удалось загрузить цели'));
+  }, [me?.id]);
 
   if (!me) return null;
 
-  const myKpis = data.kpis.filter((k) => k.employeeId === me.id);
   const point = data.points.find((p) => p.id === me.pointId);
   const peers = data.employees.filter((e) => e.pointId === me.pointId);
   const rank =
@@ -66,6 +83,74 @@ export default function MyStats({ onOpenTraining }: { onOpenTraining: () => void
 
       <EmployeeBadgePanel />
 
+      {/* Цели показываем всегда, а не только после первой смены: их ставят
+          заранее, и сотрудник должен увидеть норму ещё до выхода в зал. */}
+      <section className="mt-6">
+        <SectionHead
+          eyebrow="Поставил руководитель"
+          title="Мои цели"
+          hint={`Прогресс обновляется после каждого закрытого ${L.interactionGenitive}.`}
+        />
+        {kpiError ? (
+          <EmptyState icon={<AlertTriangle size={22} />} title="Не удалось загрузить цели" hint={kpiError} />
+        ) : myKpis === null ? (
+          <div className="flex justify-center py-10 text-slate-400">
+            <Loader2 size={22} className="animate-spin" />
+          </div>
+        ) : myKpis.length === 0 ? (
+          <EmptyState
+            icon={<Target size={22} />}
+            title="Целей пока нет"
+            hint="Руководитель ещё не назначил вам KPI. Как только это произойдёт, цели появятся здесь."
+          />
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {myKpis.map((k) => {
+              const def = KPI_METRIC_META[k.metric as KpiMetric] ?? { key: k.metric, label: k.metric, unit: 'count' as const };
+              const hasCurrent = k.current !== null;
+              const share = hasCurrent ? kpiProgress(def, k.current as number, Number(k.target)) : 0;
+              const done = hasCurrent ? kpiReached(def, k.current as number, Number(k.target)) : false;
+              return (
+                <Card key={k.id} className="p-4">
+                  <div className="mb-3 flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-[14px] font-semibold text-ink">{def.label}</p>
+                      <p className="mt-0.5 text-[12px] text-slate-500">
+                        {PERIOD_LABEL[k.period]}
+                        {def.lowerIsBetter ? ' · меньше — лучше' : ''}
+                      </p>
+                    </div>
+                    {hasCurrent && (
+                      <Chip tone={done ? 'good' : share >= 70 ? 'warn' : 'neutral'}>
+                        {Math.round(share)}%
+                      </Chip>
+                    )}
+                  </div>
+                  <div className="mb-2 flex items-baseline gap-1.5">
+                    <span className="figure text-[22px] leading-none font-semibold text-ink">
+                      {hasCurrent ? formatMetric(k.current as number, def.unit, true) : '—'}
+                    </span>
+                    <span className="num text-[13px] text-slate-500">
+                      {def.lowerIsBetter ? 'при цели' : 'из'} {formatMetric(Number(k.target), def.unit, true)}
+                    </span>
+                  </div>
+                  {hasCurrent ? (
+                    <Progress value={share} tone={done ? 'good' : share >= 70 ? 'warn' : 'brand'} />
+                  ) : (
+                    <p className="text-[12px] text-slate-400">Данных за период ещё нет</p>
+                  )}
+                  {k.note && (
+                    <p className="mt-2.5 border-l-2 border-slate-200 pl-2.5 text-[12px] text-slate-500">
+                      {k.note}
+                    </p>
+                  )}
+                </Card>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
       {!hasData ? (
         <div className="mt-6">
           <EmptyState
@@ -76,60 +161,6 @@ export default function MyStats({ onOpenTraining }: { onOpenTraining: () => void
         </div>
       ) : (
         <>
-          {/* KPI */}
-          <section className="mt-6">
-            <SectionHead
-              eyebrow="Поставил руководитель"
-              title="Мои цели"
-              hint={`Прогресс обновляется после каждого закрытого ${L.interactionGenitive}.`}
-            />
-            {myKpis.length === 0 ? (
-              <EmptyState
-                icon={<Target size={22} />}
-                title="Целей пока нет"
-                hint="Руководитель ещё не назначил вам KPI. Как только это произойдёт, цели появятся здесь."
-              />
-            ) : (
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                {myKpis.map((k) => {
-                  const def = findMetric(profile, k.metric);
-                  const share = kpiProgress(def, k.current, k.target);
-                  const done = kpiReached(def, k.current, k.target);
-                  return (
-                    <Card key={k.id} className="p-4">
-                      <div className="mb-3 flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="text-[14px] font-semibold text-ink">{def.label}</p>
-                          <p className="mt-0.5 text-[12px] text-slate-500">
-                            {PERIOD_LABEL[k.period]}
-                            {def.lowerIsBetter ? ' · меньше — лучше' : ''}
-                          </p>
-                        </div>
-                        <Chip tone={done ? 'good' : share >= 70 ? 'warn' : 'neutral'}>
-                          {Math.round(share)}%
-                        </Chip>
-                      </div>
-                      <div className="mb-2 flex items-baseline gap-1.5">
-                        <span className="figure text-[22px] leading-none font-semibold text-ink">
-                          {formatMetric(k.current, def.unit, true)}
-                        </span>
-                        <span className="num text-[13px] text-slate-500">
-                          {def.lowerIsBetter ? 'при цели' : 'из'} {formatMetric(k.target, def.unit, true)}
-                        </span>
-                      </div>
-                      <Progress value={share} tone={done ? 'good' : share >= 70 ? 'warn' : 'brand'} />
-                      {k.note && (
-                        <p className="mt-2.5 border-l-2 border-slate-200 pl-2.5 text-[12px] text-slate-500">
-                          {k.note}
-                        </p>
-                      )}
-                    </Card>
-                  );
-                })}
-              </div>
-            )}
-          </section>
-
           {/* Показатели */}
           <section className="mt-7">
             <SectionHead title="Показатели за месяц" />

@@ -1,16 +1,17 @@
-﻿import { useMemo, useState } from 'react';
+﻿import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   ArrowLeft,
   BluetoothOff,
   GraduationCap,
   HandHelping,
+  Loader2,
   Target,
-  Trash2,
   TrendingUp,
   Users,
   Wifi,
 } from 'lucide-react';
-import { useStore } from '../../store';
+import { useStore, KPI_METRIC_META, KPI_METRIC_ORDER } from '../../store';
 import { Avatar, Card, Chip, EmptyState, Field, Modal, Progress, SectionHead } from '../../components/ui';
 import { PageHead } from '../../components/Shell';
 import { ChartCard, RankBars, Spark, StatTile, TrendChart } from '../../components/charts';
@@ -18,45 +19,69 @@ import { DialogList } from '../employee/MyDialogs';
 import { DialogDetail } from '../../components/DialogDetail';
 import { lastDays, money, num, pct, plural, times } from '../../lib/format';
 import { employeeMetric, formatMetric, kpiProgress, kpiReached } from '../../lib/metrics';
-import { findMetric } from '../../industryProfiles';
 import { PERIOD_LABEL } from '../../emptyState';
-import type { Dialog, Employee, KpiPeriod } from '../../types';
+import type { Dialog, Employee } from '../../types';
+import {
+  ApiError,
+  fetchEmployeeKpis,
+  getSession,
+  setEmployeeKpi,
+  setKpiForAllEmployees,
+  type KpiMetric,
+  type KpiOut,
+  type KpiPeriod,
+} from '../../../lib/api';
+
+/** Кому ставим цель: одному сотруднику (в т.ч. себе) или всем активным на точке. */
+type KpiTarget = { kind: 'employee'; employee: Employee } | { kind: 'all' };
 
 function KpiDialog({
   open,
   onClose,
-  targets,
+  target,
+  onSaved,
 }: {
   open: boolean;
   onClose: () => void;
-  targets: Employee[];
+  target: KpiTarget;
+  /** Цель, которую вернул сервер — карточка обновляется из неё, не из локальной догадки. */
+  onSaved?: (kpis: KpiOut[]) => void;
 }) {
-  const { setKpi, profile } = useStore();
-  const metrics = profile.kpiMetrics;
-  const [metric, setMetric] = useState(metrics[1]?.key ?? 'deals');
+  const venueId = getSession()?.venueId;
+  const [metric, setMetric] = useState<KpiMetric>('dialogs');
   const [period, setPeriod] = useState<KpiPeriod>('day');
-  const [target, setTarget] = useState('5');
+  const [targetValue, setTargetValue] = useState('5');
   const [note, setNote] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
-  const def = findMetric(profile, metric);
+  const def = KPI_METRIC_META[metric];
 
-  const submit = (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const value = Number(target.replace(/\s/g, '').replace(',', '.'));
+    if (!venueId) return;
+    const value = Number(targetValue.replace(/\s/g, '').replace(',', '.'));
     if (!Number.isFinite(value) || value <= 0) return;
-    targets.forEach((t) => {
-      // Дневные и недельные цели считаем от месячного факта, чтобы прогресс был честным.
-      const raw = employeeMetric(t, metric);
-      const current =
-        def.unit === 'count' && period !== 'month' ? Math.round(raw / (period === 'day' ? 20 : 4)) : raw;
-      setKpi({ employeeId: t.id, metric, period, target: value, current, setBy: 'Вы', note: note.trim() || undefined });
-    });
-    setSaved(true);
-    setTimeout(() => {
-      setSaved(false);
-      onClose();
-    }, 1100);
+    setSaving(true);
+    setError(null);
+    try {
+      const payload = { metric, target: value, period, note: note.trim() || undefined };
+      const kpis =
+        target.kind === 'employee'
+          ? [await setEmployeeKpi(venueId, Number(target.employee.id), payload)]
+          : await setKpiForAllEmployees(venueId, payload);
+      onSaved?.(kpis);
+      setSaved(true);
+      setTimeout(() => {
+        setSaved(false);
+        onClose();
+      }, 1100);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось поставить цель — попробуйте ещё раз');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -64,30 +89,22 @@ function KpiDialog({
       open={open}
       onClose={onClose}
       title="Поставить KPI"
-      subtitle={targets.length === 1 ? targets[0].name : `${targets.length} сотрудникам — цель применится к каждому`}
+      subtitle={
+        target.kind === 'employee' ? target.employee.name : 'Всем активным сотрудникам точки — цель применится к каждому'
+      }
       width="max-w-lg"
     >
       <form onSubmit={submit} className="space-y-4">
-        <Field label="Показатель" hint={`Список зависит от отрасли: ${profile.labels.industry.toLowerCase()}`}>
-          <select className="field" value={metric} onChange={(e) => setMetric(e.target.value)}>
-            <optgroup label="Ядро Onvy">
-              {metrics.slice(0, 9).map((m) => (
-                <option key={m.key} value={m.key}>
-                  {m.label}
-                </option>
-              ))}
-            </optgroup>
-            {metrics.length > 9 && (
-              <optgroup label={profile.labels.industry}>
-                {metrics.slice(9).map((m) => (
-                  <option key={m.key} value={m.key}>
-                    {m.label}
-                  </option>
-                ))}
-              </optgroup>
-            )}
+        <Field label="Показатель" hint="Onvy считает эти показатели сам — без кассы и учётной системы">
+          <select className="field" value={metric} onChange={(e) => setMetric(e.target.value as KpiMetric)}>
+            {KPI_METRIC_ORDER.map((key) => (
+              <option key={key} value={key}>
+                {KPI_METRIC_META[key].label}
+              </option>
+            ))}
           </select>
         </Field>
+        {def.hint && <p className="-mt-2.5 text-[12px] text-slate-500">{def.hint}</p>}
 
         <Field label="Период">
           <div className="grid grid-cols-3 gap-2">
@@ -118,8 +135,8 @@ function KpiDialog({
         >
           <input
             className="field num"
-            value={target}
-            onChange={(e) => setTarget(e.target.value)}
+            value={targetValue}
+            onChange={(e) => setTargetValue(e.target.value)}
             inputMode="decimal"
             required
           />
@@ -134,12 +151,14 @@ function KpiDialog({
           />
         </Field>
 
+        {error && <p className="text-[13px] text-rose-600">{error}</p>}
+
         <div className="flex gap-2 pt-1">
-          <button type="button" className="btn-ghost flex-1" onClick={onClose}>
+          <button type="button" className="btn-ghost flex-1" onClick={onClose} disabled={saving}>
             Отмена
           </button>
-          <button type="submit" className="console-btn-primary flex-1">
-            {saved ? 'Цель поставлена' : 'Поставить цель'}
+          <button type="submit" className="console-btn-primary flex-1" disabled={saving}>
+            {saving ? <Loader2 size={16} className="animate-spin" /> : saved ? 'Цель поставлена' : 'Поставить цель'}
           </button>
         </div>
       </form>
@@ -148,13 +167,28 @@ function KpiDialog({
 }
 
 function EmployeeProfile({ employee, onBack }: { employee: Employee; onBack: () => void }) {
-  const { data, removeKpi, profile } = useStore();
+  const { data, profile } = useStore();
   const L = profile.labels;
   const [kpiOpen, setKpiOpen] = useState(false);
   const [openDialog, setOpenDialog] = useState<Dialog | null>(null);
+  const [kpis, setKpis] = useState<KpiOut[] | null>(null);
+  const [kpiError, setKpiError] = useState<string | null>(null);
+
+  const venueId = getSession()?.venueId;
+  const loadKpis = useCallback(() => {
+    if (!venueId) return;
+    setKpiError(null);
+    fetchEmployeeKpis(venueId, Number(employee.id))
+      .then(setKpis)
+      .catch(() => setKpiError('Не удалось загрузить цели'));
+  }, [venueId, employee.id]);
+
+  useEffect(() => {
+    setKpis(null);
+    loadKpis();
+  }, [loadKpis]);
 
   const point = data.points.find((p) => p.id === employee.pointId);
-  const kpis = data.kpis.filter((k) => k.employeeId === employee.id);
   const dialogs = data.dialogs.filter((d) => d.employeeId === employee.id);
   const tests = data.tests.filter((t) => t.assignedTo.includes(employee.id));
   const labels = lastDays(14);
@@ -293,14 +327,21 @@ function EmployeeProfile({ employee, onBack }: { employee: Employee; onBack: () 
             </button>
           }
         />
-        {kpis.length === 0 ? (
+        {kpiError ? (
+          <EmptyState icon={<AlertTriangle size={22} />} title="Не удалось загрузить цели" hint={kpiError} />
+        ) : kpis === null ? (
+          <div className="flex justify-center py-10 text-slate-400">
+            <Loader2 size={22} className="animate-spin" />
+          </div>
+        ) : kpis.length === 0 ? (
           <EmptyState icon={<Target size={22} />} title="Целей нет" hint="Поставьте первую цель — она сразу появится у сотрудника." />
         ) : (
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {kpis.map((k) => {
-              const def = findMetric(profile, k.metric);
-              const share = kpiProgress(def, k.current, k.target);
-              const done = kpiReached(def, k.current, k.target);
+              const def = KPI_METRIC_META[k.metric as KpiMetric] ?? { key: k.metric, label: k.metric, unit: 'count' as const };
+              const hasCurrent = k.current !== null;
+              const share = hasCurrent ? kpiProgress(def, k.current as number, Number(k.target)) : 0;
+              const done = hasCurrent ? kpiReached(def, k.current as number, Number(k.target)) : false;
               return (
                 <Card key={k.id} className="p-4">
                   <div className="mb-3 flex items-start justify-between gap-2">
@@ -308,24 +349,20 @@ function EmployeeProfile({ employee, onBack }: { employee: Employee; onBack: () 
                       <p className="truncate text-[14px] font-semibold text-ink">{def.label}</p>
                       <p className="mt-0.5 text-[12px] text-slate-500">{PERIOD_LABEL[k.period]}</p>
                     </div>
-                    <button
-                      type="button"
-                      className="btn-quiet shrink-0 rounded-md p-1.5 text-slate-300 hover:text-rose-600"
-                      onClick={() => removeKpi(k.id)}
-                    >
-                      <Trash2 size={14} />
-                      <span className="sr-only">Снять цель</span>
-                    </button>
                   </div>
                   <div className="mb-2 flex items-baseline gap-1.5">
                     <span className="figure text-[20px] leading-none font-semibold text-ink">
-                      {formatMetric(k.current, def.unit, true)}
+                      {hasCurrent ? formatMetric(k.current as number, def.unit, true) : '—'}
                     </span>
                     <span className="num text-[13px] text-slate-500">
-                      {def.lowerIsBetter ? 'при цели' : 'из'} {formatMetric(k.target, def.unit, true)}
+                      {def.lowerIsBetter ? 'при цели' : 'из'} {formatMetric(Number(k.target), def.unit, true)}
                     </span>
                   </div>
-                  <Progress value={share} tone={done ? 'good' : share >= 70 ? 'warn' : 'brand'} />
+                  {hasCurrent ? (
+                    <Progress value={share} tone={done ? 'good' : share >= 70 ? 'warn' : 'brand'} />
+                  ) : (
+                    <p className="text-[12px] text-slate-400">Данных за период ещё нет</p>
+                  )}
                   {k.note && <p className="mt-2.5 text-[12px] text-slate-500">{k.note}</p>}
                 </Card>
               );
@@ -460,17 +497,33 @@ function EmployeeProfile({ employee, onBack }: { employee: Employee; onBack: () 
         </section>
       )}
 
-      <KpiDialog open={kpiOpen} onClose={() => setKpiOpen(false)} targets={[employee]} />
+      <KpiDialog
+        open={kpiOpen}
+        onClose={() => setKpiOpen(false)}
+        target={{ kind: 'employee', employee }}
+        onSaved={(saved) =>
+          setKpis((current) => {
+            const merged = [...(current ?? [])];
+            saved.forEach((k) => {
+              const idx = merged.findIndex((m) => m.id === k.id);
+              if (idx >= 0) merged[idx] = k;
+              else merged.unshift(k);
+            });
+            return merged;
+          })
+        }
+      />
     </>
   );
 }
 
 export default function Staff() {
-  const { data, profile } = useStore();
+  const { data, profile, me, staffLoaded } = useStore();
   const L = profile.labels;
   const [selected, setSelected] = useState<Employee | null>(null);
   const [pointId, setPointId] = useState('all');
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [selfOpen, setSelfOpen] = useState(false);
   const [sort, setSort] = useState<'revenue' | 'conversion' | 'onboarding' | 'script'>('revenue');
 
   const list = useMemo(() => {
@@ -494,15 +547,25 @@ export default function Staff() {
         title="Сотрудники и KPI"
         subtitle={`Весь штат: результат, качество разговоров, обучение и самостоятельность. Нажмите на строку, чтобы открыть карточку.`}
         action={
-          data.employees.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Управляющий — тоже сотрудник точки, и цель может поставить и себе. */}
+            {me && (
+              <button type="button" className="btn-ghost" onClick={() => setSelfOpen(true)}>
+                <Target size={15} /> Поставить цель себе
+              </button>
+            )}
             <button type="button" className="console-btn-primary" onClick={() => setBulkOpen(true)}>
               <Target size={15} /> Поставить KPI всем
             </button>
-          ) : undefined
+          </div>
         }
       />
 
-      {data.employees.length === 0 ? (
+      {!staffLoaded ? (
+        <div className="flex justify-center py-16 text-slate-400">
+          <Loader2 size={22} className="animate-spin" />
+        </div>
+      ) : data.employees.length === 0 ? (
         <EmptyState
           icon={<Users size={22} />}
           title="В штате пока никого"
@@ -642,10 +705,11 @@ export default function Staff() {
             интеграция с учётной системой, в пилот она не входит. Качество разговоров, обучение и
             связь Onvy измеряет сам.
           </p>
-
-          <KpiDialog open={bulkOpen} onClose={() => setBulkOpen(false)} targets={list} />
         </>
       )}
+
+      <KpiDialog open={bulkOpen} onClose={() => setBulkOpen(false)} target={{ kind: 'all' }} />
+      {me && <KpiDialog open={selfOpen} onClose={() => setSelfOpen(false)} target={{ kind: 'employee', employee: me }} />}
     </>
   );
 }
