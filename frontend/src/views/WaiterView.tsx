@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import {
   api,
+  ApiError,
   getSession,
   logoutSession,
   playAudio,
@@ -252,27 +253,56 @@ export default function WaiterView({ onExit }: Props = {}) {
           // не подхватит собственный голос ассистента из динамика телефона.
           await wakeListenerRef.current?.playMp3(result.audio_base64);
         }
-      } catch {
-        setError('Онви не расслышал — проверьте связь.');
+      } catch (сбой) {
+        // 429 — это не «связь плохая», а «зал шумит и мы выбрали бюджет минуты».
+        // Раньше оба случая выглядели одинаково, и официант чинил вайфай вместо
+        // того, чтобы выключить прослушивание или просто подождать.
+        setError(
+          сбой instanceof ApiError && сбой.status === 429
+            ? 'Онви слушает слишком много шума — подождите минуту или выключите режим.'
+            : 'Онви не расслышал — проверьте связь.',
+        );
       }
     },
     [applyResult],
   );
 
+  // Занимаем место ДО await: getUserMedia и AudioContext на телефоне
+  // раскачиваются сотни миллисекунд, и всё это время ref пустой. Из-за этого
+  // «уже слушает» не срабатывало, и микрофон открывался дважды или оставался
+  // открытым после ухода с экрана — индикатор записи горел до конца смены.
+  // Ключ старта заодно отвечает на вопрос «этот запуск ещё нужен?»: если пока
+  // мы ждали, режим выключили или ушли с экрана, ключ сменится, и свежий
+  // слушатель гасится сразу, а не остаётся висеть.
+  const wakeStartKeyRef = useRef(0);
+
   const startWakeListener = useCallback(async () => {
-    if (wakeListenerRef.current) return; // уже слушает
+    if (wakeListenerRef.current || wakeStartKeyRef.current !== 0) return; // уже слушает или стартует
+    const ключ = Date.now();
+    wakeStartKeyRef.current = ключ;
     setError(null);
     try {
       const listener = new WakeListener(onWakeUtterance, setWakeState);
       await listener.start();
+      if (wakeStartKeyRef.current !== ключ) {
+        // Пока поднимались, режим успели выключить — этот микрофон уже не нужен.
+        await listener.stop();
+        return;
+      }
       wakeListenerRef.current = listener;
     } catch {
-      setWakeOn(false);
-      setError('Онви не слышит — разрешите микрофон в настройках браузера.');
+      if (wakeStartKeyRef.current === ключ) {
+        wakeStartKeyRef.current = 0;
+        setWakeOn(false);
+        setError('Онви не слышит — разрешите микрофон в настройках браузера.');
+      }
     }
   }, [onWakeUtterance]);
 
   const stopWakeListener = useCallback(async () => {
+    // Сбрасываем ключ первым: этим мы отменяем и тот запуск, который сейчас
+    // висит на await и ещё не успел записаться в ref.
+    wakeStartKeyRef.current = 0;
     const listener = wakeListenerRef.current;
     wakeListenerRef.current = null;
     setWakeState('idle');

@@ -99,6 +99,13 @@ async def handle_voice_query(
         recognized = await recognition.recognize(audio_lpcm, language)
     except SpeechUnavailable as exc:
         logger.warning("Распознавание отказало (%s): %s", exc.provider, exc)
+        if require_wake_word:
+            # Постоянное прослушивание: мы не знаем, была ли эта фраза обращением
+            # к нам, — распознать её не вышло. Значит с большой вероятностью это
+            # обычный разговор со столом, и телефон обязан промолчать. Иначе при
+            # перебоях в облаке он посреди смены заговорит «Не расслышал» поверх
+            # разговора с гостем, причём тем чаще, чем хуже связь.
+            return AssistantOutcome(kind=IntentKind.IGNORED, degraded="asr", metrics=metrics)
         return await _speak_only(
             ASR_FAILED, language, synthesis, metrics, kind=IntentKind.EMPTY, degraded="asr"
         )

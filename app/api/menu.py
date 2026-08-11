@@ -27,6 +27,10 @@ from app.schemas.menu import (
 from app.services import menu as menu_service
 from app.services.menu import MenuCsvRow
 
+# Меню чайханы — десятки килобайт; 5 МБ с запасом покрывает файл с лишними
+# листами и форматированием, но не даёт развернуть zip-бомбу.
+_MAX_MENU_UPLOAD_BYTES = 5 * 1024 * 1024
+
 router = APIRouter(prefix="/venues/{venue_id}/menu", tags=["menu"])
 
 
@@ -190,6 +194,18 @@ async def import_menu(
     """
     require_own_venue(current, venue_id)
     raw = await file.read()
+    # Меню чайханы — это десятки килобайт. Потолок нужен не от злого умысла
+    # (загружает авторизованный управляющий), а от случайности: .xlsx — это zip,
+    # и небольшой архив разворачивается openpyxl в гигабайты XML. На пилоте
+    # приложение живёт в одном контейнере, поэтому один такой файл кладёт зал.
+    if len(raw) > _MAX_MENU_UPLOAD_BYTES:
+        raise HTTPException(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=(
+                f"Файл больше {_MAX_MENU_UPLOAD_BYTES // (1024 * 1024)} МБ — для меню это "
+                "слишком много. Пришлите только лист с блюдами, без картинок и лишних листов."
+            ),
+        )
     try:
         plan = await menu_service.import_menu_csv(
             db, venue_id, raw, dry_run=dry_run, filename=file.filename

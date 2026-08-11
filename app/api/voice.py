@@ -27,7 +27,7 @@ from app.services.assistant_flow import (
 )
 from app.services.comms_flow import deliver
 from app.services.menu import active_stop_list, load_menu
-from app.services.rate_limit import RateLimitRule, rate_limit_dependency
+from app.services.rate_limit import RateLimitRule, check_rate_limit, rate_limit_dependency
 from app.services.runtime import get_bus, get_presence
 
 logger = logging.getLogger(__name__)
@@ -46,16 +46,21 @@ def _employee_key(request: Request) -> str:
 # Заевшая кнопка в кармане или сотрудник, забавляющийся с ассистентом, без
 # лимита выжгут квоту облака за смену. 30 нажатий в минуту — заведомо больше,
 # чем успевает человек, и заведомо меньше, чем может залипшая кнопка.
-_voice_rate_limit = rate_limit_dependency(
-    RateLimitRule(limit=30, window_seconds=60), "voice", key_func=_employee_key
-)
+_BUTTON_RULE = RateLimitRule(limit=30, window_seconds=60)
+
+# У постоянного прослушивания счёт другой. Фразу закрывает пауза в 1.2 секунды,
+# поэтому шумный зал сам по себе выдаёт под три десятка обрывков в минуту —
+# лимит кнопки он выбирает без всякого злого умысла. А выбрав, глушит и
+# настоящие обращения «Онви…» до конца окна: официант жмёт, а ассистент молчит.
+# Потолок всё равно нужен (это деньги за облако), но считать его надо отдельно
+# и с запасом на шум.
+_ALWAYS_ON_RULE = RateLimitRule(limit=90, window_seconds=60)
+
+# Текстовый вопрос ассистенту печатают руками — здесь бюджета кнопки хватает.
+_text_rate_limit = rate_limit_dependency(_BUTTON_RULE, "assistant-ask", key_func=_employee_key)
 
 
-@router.post(
-    "/voice/push-to-talk",
-    response_model=VoiceResult,
-    dependencies=[Depends(_voice_rate_limit)],
-)
+@router.post("/voice/push-to-talk", response_model=VoiceResult)
 async def push_to_talk(
     audio: UploadFile,
     always_on: bool = Form(
@@ -74,6 +79,15 @@ async def push_to_talk(
     redis: Redis = Depends(get_redis),
 ) -> VoiceResult:
     """Обработать запись с кнопки: ответить по меню или передать реплику коллегам."""
+    # Лимит выбираем здесь, а не зависимостью роута: она отрабатывает до разбора
+    # тела и не знает, кнопка это или постоянное прослушивание, — а бюджеты у
+    # них разные (см. _BUTTON_RULE и _ALWAYS_ON_RULE).
+    await check_rate_limit(
+        redis,
+        f"rl:voice:{'wake' if always_on else 'button'}:{current.id}",
+        _ALWAYS_ON_RULE if always_on else _BUTTON_RULE,
+    )
+
     audio_bytes = await audio.read()
     language = normalize(current.language)
 
@@ -123,7 +137,7 @@ async def push_to_talk(
 @router.post(
     "/assistant/ask",
     response_model=VoiceResult,
-    dependencies=[Depends(_voice_rate_limit)],
+    dependencies=[Depends(_text_rate_limit)],
 )
 async def ask_assistant(
     payload: AssistantAskIn,

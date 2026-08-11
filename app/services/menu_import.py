@@ -143,15 +143,38 @@ def _fuzzy_match_field(normalized: str) -> str | None:
 
 
 def _map_known_columns(row: list[str]) -> dict[int, str]:
-    """Индекс колонки -> имя поля модели, для одной строки-кандидата в шапку."""
+    """Индекс колонки -> имя поля модели, для одной строки-кандидата в шапку.
+
+    На одно поле в файле нередко претендуют две колонки: «Наименование» и
+    «Наименование группы», «Цена» и «Цена со скидкой». Побеждать должна та, что
+    названа точнее, а не та, что правее. Раньше выигрывала последняя, и это
+    молча ломало весь импорт: блюдо получало имя своей категории, а пустая
+    колонка скидки стирала цену и отклоняла каждую строку файла.
+
+    Точным считаем совпадение заголовка с алиасом целиком; «догадка» по
+    вхождению слова уступает ему всегда, а при равной точности берём первую
+    колонку — в выгрузках главная обычно левее уточняющей.
+    """
     column_map: dict[int, str] = {}
+    точные: set[str] = set()
     for idx, cell in enumerate(row):
         normalized = _normalize_header(cell)
         if not normalized:
             continue
-        field = _HEADER_ALIASES.get(normalized) or _fuzzy_match_field(normalized)
-        if field:
-            column_map[idx] = field
+        точное = _HEADER_ALIASES.get(normalized)
+        field = точное or _fuzzy_match_field(normalized)
+        if not field:
+            continue
+        уже = field in column_map.values()
+        if уже and (field in точные or точное is None):
+            # Поле уже занято — новой колонке нечем перебить занявшую.
+            continue
+        if уже:
+            # Точное совпадение вытесняет прежнюю догадку.
+            column_map = {i: f for i, f in column_map.items() if f != field}
+        column_map[idx] = field
+        if точное:
+            точные.add(field)
     return column_map
 
 
@@ -291,7 +314,11 @@ def _cell_to_text(value: object) -> str:
     if isinstance(value, int):
         return str(value)
     if isinstance(value, datetime):
-        return value.strftime("%d.%m.%Y %H:%M") if value.time() else value.strftime("%d.%m.%Y")
+        # Сравниваем с полуночью явно: time(0, 0) — истинный объект, поэтому
+        # проверка «if value.time()» всегда срабатывала, и дата без времени
+        # печаталась как «01.02.2026 00:00».
+        без_времени = value.time() == time(0, 0)
+        return value.strftime("%d.%m.%Y") if без_времени else value.strftime("%d.%m.%Y %H:%M")
     if isinstance(value, date):
         return value.strftime("%d.%m.%Y")
     if isinstance(value, time):
@@ -313,15 +340,31 @@ def _rows_from_xlsx(raw: bytes) -> list[list[str]]:
         # Первый лист — реальные меню почти всегда однолистовые, а называть
         # листы управляющий может как угодно, выбирать по имени не на чем.
         sheet = workbook.worksheets[0]
+        # Читаем в try не для порядка: в режиме read_only openpyxl разбирает XML
+        # листа лениво, уже во время обхода строк. Поэтому недокачанный или
+        # побитый файл — обычное дело, когда его копируют с флешки или шлют
+        # мессенджером — падает НЕ на открытии, а здесь. Без этого перехвата
+        # управляющий получал 500 и трейсбек вместо объяснения.
         return [
             [_cell_to_text(cell) for cell in raw_row]
             for raw_row in sheet.iter_rows(values_only=True)
         ]
+    except MenuImportError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — любая поломка разбора XML листа
+        raise MenuImportError(
+            "Файл Excel открылся, но прочитать лист не удалось — скорее всего, "
+            "он повреждён или скачался не полностью. Откройте его в Excel, "
+            "сохраните заново (Файл → Сохранить как → Книга Excel) и пришлите ещё раз."
+        ) from exc
     finally:
         workbook.close()
 
 
 # --- Разбор одной строки данных (общий для CSV и Excel) -----------------------
+
+
+_ЧИСЛО_В_ЯЧЕЙКЕ = re.compile(r"-?\d+")
 
 
 def _parse_optional_int(
@@ -332,13 +375,37 @@ def _parse_optional_int(
     min_value: int | None = None,
     max_value: int | None = None,
 ) -> int | None:
+    """Разобрать необязательное целое поле.
+
+    Единицы измерения в самой ячейке — норма, а не поломка: «250 г», «15 мин»,
+    «0,5 кг» пишут ровно так же часто, как выносят в заголовок. Достаём число и
+    работаем дальше.
+
+    Граница проведена так: **не поняли — молчим и не мешаем блюду; поняли, и
+    значение заведомо неверное — говорим.**
+
+    Совсем нечитаемая ячейка оставляет поле пустым, но строку НЕ бракует.
+    Раньше любая такая мелочь роняла блюдо целиком: «Лагман, 450 ₽, 250 г» не
+    попадал в меню из-за буквы «г» в весе. Вес и время подачи — справочные, а
+    название и цена у строки уже есть; терять из-за них блюдо, которое официант
+    потом не найдёт, — плохой размен.
+
+    Выход за диапазон — другое дело: число мы прочитали, и «острота 5» при шкале
+    0–3 значит, что в заведении своя шкала. Это стоит показать управляющему в
+    предпросмотре, а не проглотить молча.
+    """
     if not raw:
         return None
     try:
         value = int(raw)
     except ValueError:
-        errors.append(f"не удалось разобрать «{field_name}»: {raw!r}")
-        return None
+        совпадение = _ЧИСЛО_В_ЯЧЕЙКЕ.search(raw)
+        if совпадение is None:
+            return None
+        try:
+            value = int(совпадение.group())
+        except ValueError:
+            return None
     too_small = min_value is not None and value < min_value
     too_large = max_value is not None and value > max_value
     if too_small or too_large:
