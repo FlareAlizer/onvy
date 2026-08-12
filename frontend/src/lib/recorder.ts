@@ -96,6 +96,32 @@ export class WakeListener {
     private onState?: (s: 'idle' | 'speech' | 'sending') => void,
   ) {}
 
+  /** Жив ли микрофон: и звуковой контекст запущен, и дорожка не остановлена. */
+  жив(): boolean {
+    const дорожка = this.stream?.getAudioTracks()[0];
+    return this.ctx?.state === 'running' && !!дорожка && дорожка.readyState === 'live';
+  }
+
+  /**
+   * Разбудить микрофон после возврата из фона.
+   *
+   * Телефон, погасив экран, усыпляет вкладку: AudioContext уходит в suspended и
+   * сам не возвращается. Пока этого не делали, официант возвращался к телефону
+   * и говорил в мёртвый микрофон — без единого признака, что его не слышат.
+   *
+   * Возвращает false, если поднять не вышло: дорожку могла забрать система, и
+   * тогда нужен полный перезапуск слушателя.
+   */
+  async оживить(): Promise<boolean> {
+    if (!this.ctx) return false;
+    try {
+      if (this.ctx.state === 'suspended') await this.ctx.resume();
+    } catch {
+      return false;
+    }
+    return this.жив();
+  }
+
   async start(): Promise<void> {
     this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     this.ctx = new AudioContext();

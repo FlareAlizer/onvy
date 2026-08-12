@@ -34,6 +34,7 @@ import {
 } from '../lib/api';
 import { useComms } from '../lib/comms';
 import { startRecording, stopRecording, WakeListener } from '../lib/recorder';
+import { ScreenAwake } from '../lib/screenlock';
 import PersonPicker from '../components/PersonPicker';
 
 // Кому уходит нажатие кнопки. Выбор пальцем нужен для случая, когда называть
@@ -311,6 +312,37 @@ export default function WaiterView({ onExit }: Props = {}) {
   useEffect(() => {
     void startWakeListener();
   }, [startWakeListener]);
+
+  // Экран не должен гаснуть, пока идёт смена.
+  //
+  // Телефон, погасив экран, усыпляет вкладку — звуковой контекст уходит в сон,
+  // и Онви перестаёт слышать. Без единого сообщения: усыплённая вкладка не может
+  // о себе сказать. Официант в это время говорит в мёртвый микрофон.
+  useEffect(() => {
+    const бодрость = new ScreenAwake();
+    void бодрость.start();
+    return () => void бодрость.stop();
+  }, []);
+
+  // Телефон всё равно могли заблокировать кнопкой или переключиться на другое
+  // приложение. При возврате будим микрофон, а если дорожку забрала система —
+  // поднимаем слушателя заново. Молча мёртвым он остаться не должен.
+  useEffect(() => {
+    const приВозврате = async () => {
+      if (document.visibilityState !== 'visible') return;
+      const слушатель = wakeListenerRef.current;
+      if (!слушатель) {
+        void startWakeListener();
+        return;
+      }
+      if (!(await слушатель.оживить())) {
+        await stopWakeListener();
+        void startWakeListener();
+      }
+    };
+    document.addEventListener('visibilitychange', приВозврате);
+    return () => document.removeEventListener('visibilitychange', приВозврате);
+  }, [startWakeListener, stopWakeListener]);
 
   // Закрыть микрофон постоянного прослушивания при уходе с экрана — иначе
   // индикатор записи в браузере горит и после того, как официант открыл кабинет.
