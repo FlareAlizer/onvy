@@ -117,7 +117,7 @@ export default function MyStats({ onOpenTraining }: { onOpenTraining: () => void
                       <p className="text-[14px] font-semibold text-ink">{def.label}</p>
                       <p className="mt-0.5 text-[12px] text-slate-500">
                         {PERIOD_LABEL[k.period]}
-                        {def.lowerIsBetter ? ' · меньше — лучше' : ''}
+                        {def.lowerIsBetter ? ' · цель — не превышать' : ''}
                       </p>
                     </div>
                     {hasCurrent && (

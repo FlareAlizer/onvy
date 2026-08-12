@@ -174,7 +174,7 @@ export default function TalkTab() {
           }`}
         >
           <Sparkles size={16} />
-          Ассистенту — спросить про меню
+          Ассистенту — состав, цены, аллергены
         </button>
         <div className="mt-2 grid grid-cols-4 gap-2">
           {ГРУППЫ.map(({ key, label }) => (
@@ -232,7 +232,7 @@ export default function TalkTab() {
             onChange={(e) => setТекст(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && void отправитьТекстом()}
             placeholder={
-              адресат.kind === 'assistant' ? 'Спросить про меню' : 'Или напишите текстом'
+              адресат.kind === 'assistant' ? 'Вопрос по меню' : 'Или напишите текстом'
             }
             className="min-w-0 flex-1 rounded-xl bg-stone-900 px-4 py-3 text-base outline-none ring-1 ring-stone-800 focus:ring-2 focus:ring-emerald-500"
           />

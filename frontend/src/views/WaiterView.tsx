@@ -101,16 +101,16 @@ export default function WaiterView({ onExit }: Props = {}) {
   const [error, setError] = useState<string | null>(null);
   const phaseRef = useRef<Phase>('idle');
 
-  // Постоянное прослушивание («Онви слушает»). Выключено по умолчанию: открытый
-  // микрофон — это батарея, трафик на облачное распознавание и чужие разговоры
-  // в зале. Официант включает режим сам и должен видеть, что он активен.
-  const [wakeOn, setWakeOn] = useState(false);
+  // Микрофон открыт всю смену — переключателя нет.
+  //
+  // Официант стоит перед гостем с подносом. Любое действие в телефоне видно
+  // гостю и выглядит несолидно, поэтому включать слушателя руками он не должен:
+  // экран рации открыт — Онви слышит. Что при этом происходит с чужими
+  // разговорами, решено на сервере: фраза без обращения выбрасывается целиком
+  // и никуда не сохраняется (app/services/assistant_flow.py).
   const [wakeState, setWakeState] = useState<'idle' | 'speech' | 'sending'>('idle');
+  const [микрофонНеДоступен, setМикрофонНеДоступен] = useState(false);
   const wakeListenerRef = useRef<WakeListener | null>(null);
-  // Кнопка и постоянное прослушивание читают этот флаг из стабильных колбэков
-  // (медиа-клавиша гарнитуры создаётся один раз) — обычный useState там был бы
-  // устаревшим значением из первого рендера.
-  const wakeOnRef = useRef(false);
 
   // Выбор адресата пальцем и отправка текстом — запасной путь для того же
   // случая, когда голосом неудобно (шум, не хочет говорить при госте).
@@ -120,7 +120,6 @@ export default function WaiterView({ onExit }: Props = {}) {
   const [отправка, setОтправка] = useState(false);
 
   phaseRef.current = phase;
-  wakeOnRef.current = wakeOn;
 
   // Адресат читается через ref теми же стабильными колбэками, что и кнопка:
   // объявлен здесь, а не рядом с кнопкой, потому что нужен ещё и постоянному
@@ -293,8 +292,7 @@ export default function WaiterView({ onExit }: Props = {}) {
     } catch {
       if (wakeStartKeyRef.current === ключ) {
         wakeStartKeyRef.current = 0;
-        setWakeOn(false);
-        setError('Онви не слышит — разрешите микрофон в настройках браузера.');
+        setМикрофонНеДоступен(true);
       }
     }
   }, [onWakeUtterance]);
@@ -309,18 +307,10 @@ export default function WaiterView({ onExit }: Props = {}) {
     if (listener) await listener.stop();
   }, []);
 
-  // Переключатель на экране. Молчащий выключенный режим хуже явной ошибки —
-  // поэтому неудачу показываем текстом (см. startWakeListener), а не молча
-  // оставляем тумблер в положении «включено» без работающего микрофона.
-  const toggleWake = useCallback(() => {
-    if (wakeOn) {
-      setWakeOn(false);
-      void stopWakeListener();
-    } else {
-      setWakeOn(true);
-      void startWakeListener();
-    }
-  }, [wakeOn, startWakeListener, stopWakeListener]);
+  // Микрофон поднимается сам при открытии экрана: официанту не за чем следить.
+  useEffect(() => {
+    void startWakeListener();
+  }, [startWakeListener]);
 
   // Закрыть микрофон постоянного прослушивания при уходе с экрана — иначе
   // индикатор записи в браузере горит и после того, как официант открыл кабинет.
@@ -353,7 +343,7 @@ export default function WaiterView({ onExit }: Props = {}) {
       navigator.vibrate?.(15);
     } catch {
       setError('Нет доступа к микрофону. Разрешите его в настройках браузера.');
-      if (wakeOnRef.current) void startWakeListener();
+      void startWakeListener();
     }
   }, [stopWakeListener, startWakeListener]);
 
@@ -382,7 +372,7 @@ export default function WaiterView({ onExit }: Props = {}) {
       setPhase('idle');
       // Отпустили кнопку — если постоянное прослушивание было включено,
       // возвращаем его: begin() выключал микрофон только на время записи.
-      if (wakeOnRef.current) void startWakeListener();
+      void startWakeListener();
     }
   }, [handleResult, startWakeListener]);
 
@@ -461,42 +451,27 @@ export default function WaiterView({ onExit }: Props = {}) {
         />
       </button>
 
-      {/* Постоянное прослушивание — выключено по умолчанию: открытый микрофон
-          это заряд телефона, трафик на распознавание и чужие разговоры зала.
-          Официант включает сам и всегда видит, включён ли он. */}
-      <button
-        onClick={toggleWake}
-        style={{ minHeight: 44 }}
-        className={`mx-5 mb-2 flex items-center justify-between gap-2 rounded-xl px-4 text-sm font-semibold transition-colors duration-150 ease-out ${
-          wakeOn ? 'bg-sky-500/15 text-sky-300' : 'bg-stone-900 text-stone-400'
+      {/* Индикатор, а не кнопка: микрофон работает всю смену сам.
+          Официант держит поднос и стоит перед гостем — ему не за чем следить и
+          нечего включать. Строка нужна только чтобы он видел, что его слышат. */}
+      <div
+        className={`mx-5 mb-2 flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium ${
+          микрофонНеДоступен ? 'bg-amber-500/15 text-amber-200' : 'bg-stone-900 text-stone-400'
         }`}
       >
-        <span className="flex items-center gap-2">
-          {wakeOn ? (
-            <Ear size={16} className={wakeState === 'speech' ? 'animate-pulse' : undefined} />
-          ) : (
-            <EarOff size={16} />
-          )}
-          {!wakeOn
-            ? 'Онви не слушает — включить'
+        {микрофонНеДоступен ? <EarOff size={16} /> : (
+          <Ear size={16} className={wakeState === 'speech' ? 'animate-pulse text-sky-300' : ''} />
+        )}
+        <span className="min-w-0 flex-1 truncate">
+          {микрофонНеДоступен
+            ? 'Нет доступа к микрофону — разрешите его в настройках браузера'
             : wakeState === 'speech'
-              ? 'Онви слышит вас'
+              ? 'Слышу вас'
               : wakeState === 'sending'
-                ? 'Онви обрабатывает фразу'
-                : 'Онви слушает — скажите «Онви…»'}
+                ? 'Секунду…'
+                : 'Скажите «Онви» — или держите кнопку'}
         </span>
-        <span
-          className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-150 ease-out ${
-            wakeOn ? 'bg-sky-500' : 'bg-stone-700'
-          }`}
-        >
-          <span
-            className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-transform duration-150 ease-out ${
-              wakeOn ? 'translate-x-5' : 'translate-x-0.5'
-            }`}
-          />
-        </span>
-      </button>
+      </div>
 
       {панельОткрыта && (
         <div className="mx-5 mb-2 rounded-2xl bg-stone-900/60 px-4 py-3">
@@ -510,7 +485,7 @@ export default function WaiterView({ onExit }: Props = {}) {
             }`}
           >
             <Sparkles size={16} />
-            Ассистенту — спросить про меню
+            Ассистенту — состав, цены, аллергены
           </button>
 
           <p className="mt-3 text-xs font-medium text-stone-500">Или в рацию, отделу</p>
@@ -566,7 +541,7 @@ export default function WaiterView({ onExit }: Props = {}) {
               onChange={(e) => setТекст(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && void отправитьТекстом()}
               placeholder={
-                адресат.kind === 'assistant' ? 'Спросить про меню' : 'Написать текстом'
+                адресат.kind === 'assistant' ? 'Вопрос по меню' : 'Написать текстом'
               }
               className="min-w-0 flex-1 rounded-xl bg-stone-800 px-4 py-3 text-base outline-none ring-1 ring-stone-700 focus:ring-2 focus:ring-emerald-500"
             />

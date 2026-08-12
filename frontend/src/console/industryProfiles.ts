@@ -110,7 +110,10 @@ export const CORE_METRICS: MetricDef[] = [
   { key: 'scriptCompliance', label: 'Выполнение скрипта', unit: 'pct' },
   { key: 'responseSec', label: 'Скорость ответа', unit: 'sec', lowerIsBetter: true },
   { key: 'autonomy', label: 'Решено самостоятельно', unit: 'pct' },
-  { key: 'helpRequests', label: 'Обращения за помощью', unit: 'count', lowerIsBetter: true },
+  // Формулировка намеренно про сотрудника, а не про «обращения за помощью»:
+  // спрашивать коллегу не стыдно, и продукт не за это ругает. Смысл показателя
+  // в том, как часто ответ нашёлся сразу, не отрывая смену от работы.
+  { key: 'helpRequests', label: 'Ищет ответ сам', unit: 'count', lowerIsBetter: true },
 ];
 
 /** Ядро с подставленными отраслевыми названиями. */
@@ -120,9 +123,7 @@ function coreFor(labels: IndustryLabels): MetricDef[] {
       ? { ...m, label: labels.outcomePlural }
       : m.key === 'dialogs'
         ? { ...m, label: labels.interactionPlural }
-        : m.key === 'helpRequests'
-          ? { ...m, label: `Обращения: ${labels.helpTarget.toLowerCase()}` }
-          : m,
+        : m,
   );
 }
 

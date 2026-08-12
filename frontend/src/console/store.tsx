@@ -7,7 +7,13 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { fetchStaff, getSession, logoutSession, type KpiMetric } from '../lib/api';
+import {
+  CONSOLE_DATA_KEY,
+  fetchStaff,
+  getSession,
+  logoutSession,
+  type KpiMetric,
+} from '../lib/api';
 import { accountFromSession, emptyData, employeeFromStaff, meFromSession } from './emptyState';
 import { getProfile, type IndustryProfile, type MetricDef } from './industryProfiles';
 import type { Account, AppData, Employee, ManagerFocus, Role, Test } from './types';
@@ -16,7 +22,7 @@ import type { Account, AppData, Employee, ManagerFocus, Role, Test } from './typ
 // лежит демо-пространство с выдуманными цифрами. Со старым ключом оно бы
 // подгрузилось снова и «чистая картина» не наступила бы ни у кого, кроме тех,
 // кто вручную чистит localStorage.
-const DATA_KEY = 'onvy.data.v3';
+const DATA_KEY = CONSOLE_DATA_KEY;
 const SESSION_KEY = 'onvy.session.v3';
 
 function load<T>(key: string, fallback: T): T {
@@ -97,10 +103,10 @@ export const KPI_METRIC_META: Record<KpiMetric, MetricDef> = {
   },
   help_requests: {
     key: 'help_requests',
-    label: 'Обращения за помощью',
+    label: 'Ищет ответ сам',
     unit: 'count',
     lowerIsBetter: true,
-    hint: 'Сколько раз за период потребовалась помощь коллег — цель не превышать значение',
+    hint: 'Сколько раз пришлось отрывать коллегу от работы. Спрашивать не стыдно — цель в том, чтобы ответ находился сразу, не отвлекая смену',
   },
 };
 
@@ -154,7 +160,10 @@ export function StoreProvider({
   // должно приехать из API платформы, а не из выдуманного набора.
   const [data, setData] = useState<AppData>(() => load<AppData>(DATA_KEY, emptyData()));
 
-  useEffect(() => save(DATA_KEY, data), [data]);
+  // Сохраняем всё, кроме смены: она приезжает с сервера при каждом открытии
+  // кабинета, а сохранённая переживала бы выход и показывала следующему
+  // вошедшему чужих людей.
+  useEffect(() => save(DATA_KEY, { ...data, employees: [] }), [data]);
 
   // Кто вошёл — берётся из настоящей сессии платформы, целиком. Своего входа у
   // консоли больше нет: внутри продукта человек уже авторизован, и вторая форма
