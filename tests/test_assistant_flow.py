@@ -255,3 +255,76 @@ class TestОтказРаспознаванияПриОткрытомМикроф
 
         assert итог.answer_text == assistant_flow.ASR_FAILED
         assert итог.degraded == "asr"
+
+
+class TestАллергеныНеОтдаютсяМодели:
+    """Единственное место продукта, где промпту доверять нельзя.
+
+    Инструкция «не отвечай, если поле пустое» держалась ровно до следующей правки
+    текста: на живом сервере модель уверенно выдала «аллергенов нет, аллергии не
+    вызывает» — про блюдо, у которого поле НЕ заполнено. Официант повторил бы это
+    гостю дословно.
+
+    Поэтому вопрос про аллергены по непроверенному блюду до модели не доходит
+    вовсе: ответ собирает код.
+    """
+
+    async def test_модель_не_вызывается_если_аллергены_не_заполнены(self):
+        отвечающий = FakeAnswer(text="Аллергенов нет, аллергии не вызывает.")
+        итог = await handle_voice_query(
+            AUDIO,
+            language="ru",
+            menu=[
+                MenuItemData(
+                    external_id="samsa",
+                    name="Самса",
+                    category="Выпечка",
+                    price=Decimal("150"),
+                    allergens=None,
+                )
+            ],
+            stopped=frozenset(),
+            colleagues=КОЛЛЕГИ,
+            recognition=FakeRecognition(
+                text="Онви, есть ли аллергены в самсе", languages=frozenset({"ru"})
+            ),
+            answering=отвечающий,
+            synthesis=FakeSynthesis(languages=frozenset({"ru"})),
+        )
+
+        assert отвечающий.seen_facts == [], "вопрос про аллергены дошёл до модели"
+        assert "не проверены" in итог.answer_text
+        assert "уточните на кухне" in итог.answer_text
+        # Опасной фразы модели в ответе быть не должно ни при каких обстоятельствах.
+        assert "аллергии не вызывает" not in итог.answer_text
+
+    async def test_подтверждённые_аллергены_отвечает_модель(self):
+        """Обратная сторона: когда кухня заполнила поле, запрет не мешает."""
+        отвечающий = FakeAnswer(text="Да, в лагмане есть глютен.")
+        итог = await handle_voice_query(
+            AUDIO,
+            language="ru",
+            menu=[
+                MenuItemData(
+                    external_id="lagman",
+                    name="Лагман",
+                    category="Горячее",
+                    price=Decimal("450"),
+                    allergens=("глютен",),
+                )
+            ],
+            stopped=frozenset(),
+            colleagues=КОЛЛЕГИ,
+            recognition=FakeRecognition(
+                text="Онви, есть ли глютен в лагмане", languages=frozenset({"ru"})
+            ),
+            answering=отвечающий,
+            synthesis=FakeSynthesis(languages=frozenset({"ru"})),
+        )
+
+        assert итог.answer_text == "Да, в лагмане есть глютен."
+
+    async def test_обычный_вопрос_запрет_не_трогает(self):
+        итог = await выполнить(распознано="Онви, что в составе лагмана")
+
+        assert итог.answer_text == "Лапша и говядина."
