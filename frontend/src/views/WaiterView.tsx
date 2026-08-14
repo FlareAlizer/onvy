@@ -560,11 +560,11 @@ export default function WaiterView({ onExit }: Props = {}) {
               только для случая, когда называть адресата вслух неудобно.
               Сказанное голосом всегда сильнее выбранного пальцем. */}
           <p className="mt-3 border-t border-stone-800 pt-3 text-xs leading-relaxed text-stone-500">
-            Сказанное вслух сильнее выбора здесь.{' '}
-            <span className="text-stone-400">«Кухня, два лагмана»</span> уйдёт кухне,{' '}
-            <span className="text-stone-400">«Азиз, подойди»</span> — Азизу,{' '}
-            <span className="text-stone-400">«Онви, что в лагмане»</span> — ассистенту, кого бы
-            вы здесь ни выбрали.
+            Проще позвать голосом — микрофон слышит всю смену.{' '}
+            <span className="text-stone-400">«Азиз, подойди»</span> уйдёт Азизу,{' '}
+            <span className="text-stone-400">«Кухня, два лагмана»</span> — кухне,{' '}
+            <span className="text-stone-400">«Онви, что в лагмане»</span> — ассистенту.
+            Кого выбрали здесь — применится, когда держите кнопку или пишете текстом.
           </p>
 
           <div className="mt-3 flex gap-2">

@@ -280,16 +280,28 @@ def parse(
     colleagues = colleagues or []
     had_wake, body = detect_wake_word(text)
 
-    if require_wake_word and not had_wake:
-        return Intent(kind=IntentKind.IGNORED)
-
     body = body.strip(" ,.!?")
     if not body:
-        return Intent(kind=IntentKind.EMPTY)
+        return Intent(kind=IntentKind.EMPTY if had_wake else IntentKind.IGNORED)
 
     tokens = words(body)
     original = _original_words(body)
     addressee = _find_addressee(tokens, colleagues)
+
+    # Микрофон открыт всю смену — значит нужно решить, нам ли эта фраза.
+    #
+    # Обращением считается не только «Онви», но и названный вслух коллега или
+    # отдел: «Азиз, подойди к шестому столу» — это работа, а не разговор с
+    # гостем. Так и говорят в зале, и требовать перед этим «Онви» значит сделать
+    # рацию неработающей: официант зовёт человека по имени, как звал всегда.
+    #
+    # Приватность от этого не страдает. Обращением считается только слово на
+    # позиции обращения — в начале фразы или сразу за «скажи»/«передай»
+    # (см. _find_addressee). Разговор с гостем, где имя коллеги упомянуто в
+    # середине, обращением не станет, а фраза вовсе без адресата отбрасывается
+    # целиком, как и раньше.
+    if require_wake_word and not had_wake and addressee is None:
+        return Intent(kind=IntentKind.IGNORED)
 
     if addressee is None:
         return Intent(kind=IntentKind.ASK, payload=body, addressed_assistant=had_wake)
