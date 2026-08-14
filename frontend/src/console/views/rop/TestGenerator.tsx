@@ -1,4 +1,4 @@
-﻿import { useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useState } from 'react';
 import {
   BookOpen,
   Check,
@@ -17,6 +17,9 @@ import { useStore } from '../../store';
 import { PageHead } from '../../components/Shell';
 import { Avatar, Card, Chip, EmptyState, Field, Modal, SectionHead } from '../../components/ui';
 import { humanDate, num, plural, times } from '../../lib/format';
+import { fetchFaqGaps, type FaqGap } from '../../../lib/api';
+import { assignTest, createTest, getSession } from '../../../lib/api';
+import { testFromApi } from '../../emptyState';
 import type { Test, TestQuestion, TestSource } from '../../types';
 
 const SOURCES: { id: TestSource; title: string; hint: string; icon: typeof Upload }[] = [
@@ -53,7 +56,20 @@ const SOURCES: { id: TestSource; title: string; hint: string; icon: typeof Uploa
 ];
 
 export default function TestGenerator() {
-  const { data, profile, addTest, assignTest } = useStore();
+  const { data, profile, reloadTests } = useStore();
+  const [сохраняю, setСохраняю] = useState(false);
+  const [ошибка, setОшибка] = useState<string | null>(null);
+  // «По ошибкам» собирается из настоящих вопросов зала, на которые ассистент не
+  // нашёл ответа. Разбора диалогов у нас нет и в пилот он не входит, а вот дыры
+  // в меню — есть, и они и есть то место, где смена спотыкается.
+  const [пробелы, setПробелы] = useState<FaqGap[] | null>(null);
+  useEffect(() => {
+    const venueId = getSession()?.venueId;
+    if (!venueId) return;
+    fetchFaqGaps(venueId)
+      .then(setПробелы)
+      .catch(() => setПробелы([]));
+  }, []);
   const L = profile.labels;
   const [source, setSource] = useState<TestSource>('errors');
   const [topic, setTopic] = useState('');
@@ -69,7 +85,7 @@ export default function TestGenerator() {
 
   const canGenerate =
     source === 'errors'
-      ? data.scriptErrors.length > 0
+      ? (пробелы?.length ?? 0) > 0
       : source === 'questions'
         ? data.faq.length > 0
         : source === 'knowledge'
@@ -100,19 +116,23 @@ export default function TestGenerator() {
     const weakFaq = [...data.faq].sort((a, b) => a.conversion - b.conversion);
 
     if (source === 'errors') {
-      data.scriptErrors.slice(0, 2).forEach((e, i) => {
+      // Вопросы берём из настоящих пробелов: это то, что смена реально
+      // спрашивала у ассистента и на что он не смог ответить по меню. Ответ
+      // «уточнить на кухне» здесь правильный не по формальности, а по сути:
+      // пока карточка не заполнена, гостю нельзя говорить ничего другого.
+      (пробелы ?? []).slice(0, 4).forEach((пробел, i) => {
         qs.push({
           id: `g${i}`,
-          question: `Что происходит, если пропустить этап: «${e.label.toLowerCase()}»?`,
+          question: `Гость спрашивает: «${пробел.question}». В карточке блюда этих данных нет. Что ответить?`,
           options: [
-            'Ничего критичного, клиент решает сам',
-            'Падает результативность и качество обслуживания — этап обязателен',
-            'Экономится время в час пик',
-            'Это допустимо для опытных сотрудников',
+            'Ответить по опыту — обычно так и бывает',
+            'Сказать, что уточню на кухне, и уточнить до ответа гостю',
+            'Сказать, что такого блюда нет',
+            'Предложить другое блюдо, чтобы не задерживать гостя',
           ],
           correct: 1,
-          explain: `Ситуация зафиксирована ${times(e.count)} за месяц. Требуется поддержка: ${e.employees.join(', ')}.`,
-          source: L.script,
+          explain: `Этот вопрос задавали ${times(пробел.miss_count)}, и ответа в меню не нашлось. Пустое поле значит «не проверялось», а не «нет».`,
+          source: 'Пробел в меню',
         });
       });
       weakFaq.slice(0, 2).forEach((f, i) => {
@@ -199,34 +219,56 @@ export default function TestGenerator() {
     }, 1600);
   };
 
-  const save = () => {
-    if (!draft) return;
-    const created = addTest({
-      title: title.trim() || suggestedTitle,
-      description:
-        source === 'errors'
-          ? `Собран по ${num(data.scriptErrors.reduce((a, e) => a + e.count, 0))} зафиксированным ситуациям в разговорах.`
-          : source === 'questions'
-            ? 'Собран из вопросов клиентов с самой низкой результативностью.'
-            : source === 'knowledge'
-              ? `Собран по материалам базы знаний: ${knowledgeCat}.`
-              : source === 'file'
-                ? `Загружен из файла «${fileName}».`
-                : `Сгенерирован по описанию: ${topic}`,
-      source,
-      sourceDetail,
-      createdBy: 'Вы',
-      deadline,
-      passScore,
-      questions: draft,
-      assignedTo: assignTo,
-    });
-    setDraft(null);
-    setTopic('');
-    setFileName('');
-    setTitle('');
-    setAssignTo([]);
-    setAssigning(created);
+  const save = async () => {
+    if (!draft || сохраняю) return;
+    const venueId = getSession()?.venueId;
+    if (!venueId) return;
+    setСохраняю(true);
+    setОшибка(null);
+    try {
+      // Тест уходит в базу сразу: смысл в том, чтобы он дожил до смены сотрудника,
+      // а не до перезагрузки страницы.
+      const созданный = await createTest(venueId, {
+        title: title.trim() || suggestedTitle,
+        description:
+          source === 'errors'
+            ? `Собран по ${num(data.scriptErrors.reduce((a, e) => a + e.count, 0))} зафиксированным ситуациям в разговорах.`
+            : source === 'questions'
+              ? 'Собран из вопросов клиентов с самой низкой результативностью.'
+              : source === 'knowledge'
+                ? `Собран по материалам базы знаний: ${knowledgeCat}.`
+                : source === 'file'
+                  ? `Загружен из файла «${fileName}».`
+                  : `Сгенерирован по описанию: ${topic}`,
+        source,
+        source_detail: sourceDetail,
+        deadline: deadline || null,
+        pass_score: passScore,
+        questions: draft.map((в) => ({
+          question: в.question,
+          options: в.options,
+          correct_index: в.correct,
+          explain: в.explain || null,
+          source: в.source || null,
+        })),
+      });
+
+      const сНазначением = assignTo.length
+        ? await assignTest(venueId, созданный.id, assignTo.map(Number))
+        : созданный;
+
+      await reloadTests();
+      setDraft(null);
+      setTopic('');
+      setFileName('');
+      setTitle('');
+      setAssignTo([]);
+      setAssigning(testFromApi(сНазначением));
+    } catch {
+      setОшибка('Не удалось сохранить тест. Проверьте связь и попробуйте ещё раз.');
+    } finally {
+      setСохраняю(false);
+    }
   };
 
   const toggle = (id: string) =>
@@ -604,8 +646,14 @@ export default function TestGenerator() {
                           const next = on
                             ? assigning.assignedTo.filter((x) => x !== e.id)
                             : [...assigning.assignedTo, e.id];
-                          assignTest(assigning.id, next);
+                          const venueId = getSession()?.venueId;
+                          if (!venueId) return;
                           setAssigning({ ...assigning, assignedTo: next });
+                          // Назначение сохраняем сразу: сотрудник должен увидеть
+                          // тест у себя, а не только управляющий у себя на экране.
+                          void assignTest(venueId, Number(assigning.id), next.map(Number))
+                            .then(reloadTests)
+                            .catch(() => setОшибка('Не удалось сохранить назначение.'));
                         }}
                         className={`flex w-full items-center gap-3 rounded-lg border p-2.5 text-left transition ${
                           on ? 'border-brand-400 bg-brand-50/60' : 'border-slate-200 hover:bg-slate-50'

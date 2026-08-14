@@ -11,11 +11,18 @@ import {
   CONSOLE_DATA_KEY,
   fetchPresence,
   fetchStaff,
+  fetchTests,
   getSession,
   logoutSession,
   type KpiMetric,
 } from '../lib/api';
-import { accountFromSession, emptyData, employeeFromStaff, meFromSession } from './emptyState';
+import {
+  accountFromSession,
+  emptyData,
+  employeeFromStaff,
+  meFromSession,
+  testFromApi,
+} from './emptyState';
 import { getProfile, type IndustryProfile, type MetricDef } from './industryProfiles';
 import type { Account, AppData, Employee, ManagerFocus, Role, Test } from './types';
 
@@ -129,9 +136,9 @@ interface StoreValue {
    *  значит: экраны не должны звать заводить людей, которые, может быть, есть. */
   staffLoaded: boolean;
   logout: () => void;
-  addTest: (test: Omit<Test, 'id' | 'createdAt' | 'results'>) => Test;
-  assignTest: (testId: string, employeeIds: string[]) => void;
-  recordTestResult: (testId: string, employeeId: string, score: number) => void;
+  /** Тесты живут в базе. Здесь только чтение и перезагрузка после изменений. */
+  testsLoaded: boolean;
+  reloadTests: () => Promise<void>;
   /** Приоритет текущего руководителя. */
   focus: ManagerFocus;
   setFocus: (f: ManagerFocus) => void;
@@ -253,48 +260,31 @@ export function StoreProvider({
   const logout = useCallback(() => void logoutSession(), []);
 
 
-  const addTest = useCallback<StoreValue['addTest']>((test) => {
-    const created: Test = {
-      ...test,
-      id: uid('ts'),
-      createdAt: new Date().toISOString().slice(0, 10),
-      results: {},
-    };
-    setData((d) => ({ ...d, tests: [created, ...d.tests] }));
-    return created;
+  /**
+   * Тесты — из базы, а не из памяти браузера.
+   *
+   * До этого управляющий собирал тест, назначал его смене, и всё это исчезало
+   * при перезаходе: до сотрудника задание не доходило никогда, хотя бэкенд для
+   * тестов написан и работает. Создание и назначение теперь идут через API
+   * (см. TestGenerator), а сюда возвращается то, что реально сохранилось.
+   */
+  const [тестыЗагружены, setТестыЗагружены] = useState(false);
+  const reloadTests = useCallback(async () => {
+    const venueId = getSession()?.venueId;
+    if (!venueId) return;
+    try {
+      const список = await fetchTests(venueId);
+      setData((d) => ({ ...d, tests: список.map(testFromApi) }));
+    } catch {
+      // Сеть моргнула — прошлый список честнее пустого.
+    } finally {
+      setТестыЗагружены(true);
+    }
   }, []);
 
-  const assignTest = useCallback<StoreValue['assignTest']>((testId, employeeIds) => {
-    setData((d) => ({
-      ...d,
-      tests: d.tests.map((t) => (t.id === testId ? { ...t, assignedTo: employeeIds } : t)),
-    }));
-  }, []);
-
-  const recordTestResult = useCallback<StoreValue['recordTestResult']>((testId, employeeId, score) => {
-    setData((d) => {
-      const tests = d.tests.map((t) =>
-        t.id === testId ? { ...t, results: { ...t.results, [employeeId]: score } } : t,
-      );
-      const mine = tests.filter((t) => t.assignedTo.includes(employeeId));
-      const passed = mine.filter((t) => (t.results[employeeId] ?? 0) >= t.passScore).length;
-      const employees = d.employees.map((e) =>
-        e.id === employeeId
-          ? {
-              ...e,
-              trainingDone: passed,
-              trainingTotal: mine.length,
-              xp: e.xp + Math.round(score * 2),
-              onboarding: Math.min(
-                100,
-                Math.max(e.onboarding, Math.round((passed / Math.max(1, mine.length)) * 100)),
-              ),
-            }
-          : e,
-      );
-      return { ...d, tests, employees };
-    });
-  }, []);
+  useEffect(() => {
+    if (identity) void reloadTests();
+  }, [identity?.employeeId, reloadTests]);
 
   // Приоритет руководителя меняет только порядок разделов, данных не касается.
   const [focus, setFocusState] = useState<ManagerFocus>('sales');
@@ -327,13 +317,12 @@ export function StoreProvider({
       me,
       venueName: identity?.venueName ?? '',
       staffLoaded: штатЗагружен,
+      testsLoaded: тестыЗагружены,
+      reloadTests,
       focus,
       setFocus,
       promotePractice,
       logout,
-      addTest,
-      assignTest,
-      recordTestResult,
     }),
     [
       data,
@@ -342,13 +331,12 @@ export function StoreProvider({
       me,
       identity?.venueName,
       штатЗагружен,
+      тестыЗагружены,
+      reloadTests,
       focus,
       setFocus,
       promotePractice,
       logout,
-      addTest,
-      assignTest,
-      recordTestResult,
     ],
   );
 

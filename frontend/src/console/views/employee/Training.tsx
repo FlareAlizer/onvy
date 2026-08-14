@@ -15,6 +15,7 @@ import { useStore } from '../../store';
 import { PageHead } from '../../components/Shell';
 import { Card, Chip, EmptyState, Progress, SectionHead } from '../../components/ui';
 import CountUp from '../../components/CountUp';
+import { getSession, submitTest } from '../../../lib/api';
 import { humanDate, num, plural } from '../../lib/format';
 import type { Test } from '../../types';
 
@@ -27,11 +28,12 @@ const SOURCE_LABEL: Record<string, { label: string; icon: typeof FileText }> = {
 };
 
 function TestRunner({ test, onExit }: { test: Test; onExit: () => void }) {
-  const { me, recordTestResult } = useStore();
+  const { me, reloadTests } = useStore();
   const [step, setStep] = useState(0);
   const [answers, setAnswers] = useState<Record<string, number>>({});
   const [checked, setChecked] = useState(false);
   const [finished, setFinished] = useState(false);
+  const [сбой, setСбой] = useState<string | null>(null);
 
   const q = test.questions[step];
   const picked = answers[q?.id ?? ''];
@@ -47,7 +49,16 @@ function TestRunner({ test, onExit }: { test: Test; onExit: () => void }) {
       return;
     }
     if (isLast) {
-      if (me) recordTestResult(test.id, me.id, score);
+      // Результат уходит в базу: без этого управляющий никогда не узнает, что
+      // сотрудник прошёл тест, а сам сотрудник потеряет его при перезаходе.
+      // Порядок ответов — порядок вопросов, как ждёт app/api/training.py.
+      const venueId = getSession()?.venueId;
+      if (venueId && me) {
+        const порядок = test.questions.map((qq) => answers[qq.id] ?? -1);
+        void submitTest(venueId, Number(test.id), порядок)
+          .then(reloadTests)
+          .catch(() => setСбой('Результат не сохранился — проверьте связь.'));
+      }
       setFinished(true);
       return;
     }
@@ -81,6 +92,10 @@ function TestRunner({ test, onExit }: { test: Test; onExit: () => void }) {
             ? 'Результат засчитан, опыт начислен. Приёмы из теста работают в зале — используйте их уже сегодня.'
             : `Для зачёта нужно ${test.passScore} %. Разберите ошибки ниже и пройдите ещё раз — попытки не ограничены.`}
         </p>
+
+        {/* Молчаливая потеря результата — худший исход: человек прошёл тест, а
+            руководитель этого не увидит и решит, что он не проходил. */}
+        {сбой && <p className="mt-3 text-[13px] font-medium text-amber-700">{сбой}</p>}
 
         <p className="figure mt-6 text-[52px] leading-none font-semibold text-ink">
           <CountUp to={score} suffix=" %" />

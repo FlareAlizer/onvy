@@ -9,7 +9,8 @@
 // Настоящие данные приходят из API платформы (app/api/*). Экраны, которые к нему
 // ещё не подключены, показывают пустое состояние — это и есть чистая картина.
 
-import type { Account, AppData, Employee, Role } from './types';
+import type { TestOut } from '../lib/api';
+import type { Account, AppData, Employee, Role, Test, TestSource } from './types';
 
 export const PERIOD_LABEL: Record<string, string> = {
   day: 'на день',
@@ -135,5 +136,40 @@ export function accountFromSession(
     companyId: '',
     position: ROLE_POSITION[role],
     employeeId: String(employeeId),
+  };
+}
+
+
+/**
+ * Тест из базы — в форму, которую понимают экраны кабинета.
+ *
+ * Формы разные исторически: кабинет писался под своё локальное хранилище, а
+ * бэкенд — под API платформы. Переводим здесь, в одном месте, вместо того чтобы
+ * переписывать семь экранов: так база остаётся единственным источником, а вид
+ * данных на экранах не меняется.
+ */
+export function testFromApi(тест: TestOut): Test {
+  return {
+    id: String(тест.id),
+    title: тест.title,
+    description: тест.description,
+    source: тест.source as TestSource,
+    sourceDetail: тест.source_detail,
+    createdAt: тест.created_at.slice(0, 10),
+    createdBy: '',
+    deadline: тест.deadline ?? '',
+    passScore: тест.pass_score,
+    questions: тест.questions.map((в) => ({
+      id: String(в.id),
+      question: в.question,
+      options: в.options,
+      correct: в.correct_index,
+      explain: в.explain ?? '',
+      source: в.source ?? '',
+    })),
+    assignedTo: тест.assigned_employee_ids.map(String),
+    results: Object.fromEntries(
+      тест.results.map((р) => [String(р.employee_id), р.score_percent]),
+    ),
   };
 }

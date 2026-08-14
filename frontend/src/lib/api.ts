@@ -378,6 +378,150 @@ export function playAudio(base64: string, mime = 'audio/mpeg'): Promise<void> {
 
 // --- KPI (app/api/kpi.py) -------------------------------------------------
 //
+// --- Обучение и тесты ---------------------------------------------------------
+//
+// Типы повторяют app/schemas/training.py дословно. До этого кабинет держал тесты
+// в памяти браузера: управляющий собирал тест, назначал его смене — и всё это
+// исчезало при перезаходе, а до сотрудника не доходило никогда.
+
+export type TestQuestionIn = {
+  question: string;
+  options: string[];
+  correct_index: number;
+  explain?: string | null;
+  source?: string | null;
+};
+
+export type TestCreateIn = {
+  title: string;
+  description?: string;
+  /** Один из TEST_SOURCES: errors, questions, knowledge, file, prompt. */
+  source: string;
+  source_detail?: string;
+  deadline?: string | null;
+  pass_score?: number;
+  questions: TestQuestionIn[];
+};
+
+export type TestQuestionOut = {
+  id: number;
+  position: number;
+  question: string;
+  options: string[];
+  correct_index: number;
+  explain: string | null;
+  source: string | null;
+};
+
+export type TestResultSummary = {
+  employee_id: number;
+  score_percent: number;
+  passed: boolean;
+  completed_at: string;
+};
+
+export type TestOut = {
+  id: number;
+  title: string;
+  description: string;
+  source: string;
+  source_detail: string;
+  created_at: string;
+  created_by_employee_id: number;
+  deadline: string | null;
+  pass_score: number;
+  questions: TestQuestionOut[];
+  assigned_employee_ids: number[];
+  results: TestResultSummary[];
+};
+
+export type TestForEmployee = {
+  id: number;
+  title: string;
+  description: string;
+  deadline: string | null;
+  pass_score: number;
+  questions: { id: number; position: number; question: string; options: string[] }[];
+  completed: boolean;
+  score_percent: number | null;
+};
+
+export type TestReviewQuestion = {
+  id: number;
+  position: number;
+  question: string;
+  options: string[];
+  correct_index: number;
+  given_index: number;
+  is_correct: boolean;
+};
+
+export type TestResult = {
+  test_id: number;
+  employee_id: number;
+  score_percent: number;
+  passed: boolean;
+  completed_at: string;
+  review: TestReviewQuestion[];
+};
+
+export function createTest(venueId: number, payload: TestCreateIn): Promise<TestOut> {
+  return api<TestOut>(`/venues/${venueId}/tests`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function fetchTests(venueId: number): Promise<TestOut[]> {
+  return api<TestOut[]>(`/venues/${venueId}/tests`);
+}
+
+export function assignTest(
+  venueId: number,
+  testId: number,
+  employeeIds: number[],
+): Promise<TestOut> {
+  return api<TestOut>(`/venues/${venueId}/tests/${testId}/assign`, {
+    method: 'POST',
+    body: JSON.stringify({ employee_ids: employeeIds }),
+  });
+}
+
+/** Мои назначенные тесты — кабинет сотрудника. Без правильных ответов. */
+export function fetchMyTests(venueId: number): Promise<TestForEmployee[]> {
+  return api<TestForEmployee[]>(`/venues/${venueId}/tests/mine`);
+}
+
+export function submitTest(
+  venueId: number,
+  testId: number,
+  answers: number[],
+): Promise<TestResult> {
+  return api<TestResult>(`/venues/${venueId}/tests/${testId}/submit`, {
+    method: 'POST',
+    body: JSON.stringify({ answers }),
+  });
+}
+
+/** Вопрос, на который ассистент не нашёл ответа — app/schemas/staff.py FaqGapOut. */
+export type FaqGap = {
+  question: string;
+  miss_count: number;
+  last_asked_at: string;
+  sample_query: string;
+};
+
+/**
+ * Где смена спотыкается на самом деле.
+ *
+ * Это настоящие вопросы из зала, на которые ассистент не смог ответить по меню:
+ * дыра либо в техкарте, либо в знании смены. Единственный честный источник для
+ * режима «тест по ошибкам» — разбора диалогов у нас нет и в пилот он не входит.
+ */
+export function fetchFaqGaps(venueId: number, days = 30): Promise<FaqGap[]> {
+  return api<FaqGap[]>(`/venues/${venueId}/faq/gaps?days=${days}`);
+}
+
 /** Кто на смене прямо сейчас — дословно app/schemas/insights.py PresenceOut. */
 export type Presence = {
   online_employee_ids: number[];
