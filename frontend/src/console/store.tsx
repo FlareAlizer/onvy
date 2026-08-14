@@ -9,6 +9,7 @@ import {
 } from 'react';
 import {
   CONSOLE_DATA_KEY,
+  fetchPresence,
   fetchStaff,
   getSession,
   logoutSession,
@@ -23,6 +24,10 @@ import type { Account, AppData, Employee, ManagerFocus, Role, Test } from './typ
 // подгрузилось снова и «чистая картина» не наступила бы ни у кого, кроме тех,
 // кто вручную чистит localStorage.
 const DATA_KEY = CONSOLE_DATA_KEY;
+
+// Отметка присутствия на сервере живёт 45 секунд — десяти хватает, чтобы уход
+// со смены был заметен почти сразу и при этом не долбить сервер.
+const PRESENCE_POLL_MS = 10_000;
 const SESSION_KEY = 'onvy.session.v3';
 
 function load<T>(key: string, fallback: T): T {
@@ -205,6 +210,41 @@ export function StoreProvider({
       });
     return () => {
       отменено = true;
+    };
+  }, [identity?.employeeId]);
+
+  /**
+   * Кто сейчас на связи. Спрашиваем по таймеру и проставляем это в карточки.
+   *
+   * Раньше поле «в эфире» не заполнялось ничем и у всех было false — кабинет
+   * показывал смену поголовно офлайн, даже когда люди работали. Управляющий
+   * видел пустую смену и не понимал, почему рация «никому не доходит».
+   */
+  useEffect(() => {
+    const venueId = getSession()?.venueId;
+    if (!identity || !venueId) return;
+    let отменено = false;
+    const обновить = () => {
+      fetchPresence(venueId)
+        .then(({ online_employee_ids }) => {
+          if (отменено) return;
+          const наСвязи = new Set(online_employee_ids.map(String));
+          setData((d) => ({
+            ...d,
+            employees: d.employees.map((e) =>
+              e.badgeOnline === наСвязи.has(e.id) ? e : { ...e, badgeOnline: наСвязи.has(e.id) },
+            ),
+          }));
+        })
+        .catch(() => {
+          // Сеть моргнула — прошлый список честнее, чем внезапно опустевшая смена.
+        });
+    };
+    обновить();
+    const таймер = window.setInterval(обновить, PRESENCE_POLL_MS);
+    return () => {
+      отменено = true;
+      window.clearInterval(таймер);
     };
   }, [identity?.employeeId]);
 

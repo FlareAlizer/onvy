@@ -378,6 +378,24 @@ export function playAudio(base64: string, mime = 'audio/mpeg'): Promise<void> {
 
 // --- KPI (app/api/kpi.py) -------------------------------------------------
 //
+/** Кто на смене прямо сейчас — дословно app/schemas/insights.py PresenceOut. */
+export type Presence = {
+  online_employee_ids: number[];
+  online_names: string[];
+};
+
+/**
+ * Кто сейчас на связи, по данным сервера.
+ *
+ * До этого экраны гадали сами: кабинет считал всех офлайн (поле в карточке
+ * никем не заполнялось), а экран смены считал «в эфире» того, кто говорил по
+ * рации последние пять минут. Молчащий человек с включённым телефоном при этом
+ * числился вне сети — и управляющий видел пустую смену там, где все на месте.
+ */
+export function fetchPresence(venueId: number): Promise<Presence> {
+  return api<Presence>(`/venues/${venueId}/presence`);
+}
+
 /** Сотрудник точки — дословно app/schemas/staff.py EmployeeOut. */
 export type StaffMember = {
   id: number;

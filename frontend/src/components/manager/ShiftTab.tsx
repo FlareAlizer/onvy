@@ -1,10 +1,12 @@
 // Кто сейчас на связи + лента последних реплик рации.
 //
-// Честная оговорка (см. отчёт агента): бэкенд пока не отдаёт настоящий REST
-// для присутствия по точке (app/services/presence.py есть, наружу не выведен) —
-// поэтому статус "в эфире" здесь считается по факту недавней реплики в этой
-// вкладке, а не по серверному списку подключений. Как только появится
-// GET /venues/{id}/presence, эту эвристику надо заменить на реальные данные.
+// «В эфире» — по данным сервера, а не по догадке.
+//
+// Раньше здесь стояла эвристика: в эфире тот, кто говорил по рации последние
+// пять минут. Молчащий человек с включённым телефоном при этом числился вне
+// сети — то есть управляющий видел пустую смену там, где все на месте, и не
+// понимал, почему реплики никому не доходят. Теперь спрашиваем
+// GET /venues/{id}/presence, как и задумывалось в этом комментарии.
 //
 // Вопросы к ассистенту (assistant_query) сюда тоже не попадают: наружу их
 // сейчас никто не транслирует и не отдаёт историей — нужен либо WS-relay,
@@ -12,14 +14,17 @@
 
 import { useEffect, useState } from 'react';
 import { Radio, Users, WifiOff } from 'lucide-react';
-import { apiPublic } from '../../lib/api';
+import { apiPublic, fetchPresence } from '../../lib/api';
 import { LoadingState, ErrorState } from '../StateView';
 import { roleLabel, languageLabel } from '../roles';
 import type { ConnStatus, FeedEntry } from '../../lib/comms';
 
 type EmployeeOption = { id: number; name: string; role: string; language: string };
 
-const ONLINE_WINDOW_MS = 5 * 60_000;
+// Как часто переспрашиваем, кто на связи. Отметка присутствия на сервере живёт
+// 45 секунд, поэтому десяти секунд хватает, чтобы уход со смены был заметен
+// почти сразу и при этом не долбить сервер на каждой отрисовке.
+const PRESENCE_POLL_MS = 10_000;
 
 export default function ShiftTab({
   venueId,
@@ -32,6 +37,7 @@ export default function ShiftTab({
 }) {
   const [status, setStatus] = useState<'loading' | 'error' | 'ready'>('loading');
   const [roster, setRoster] = useState<EmployeeOption[]>([]);
+  const [вЭфире, setВЭфире] = useState<Set<number>>(new Set());
 
   const load = () => {
     setStatus('loading');
@@ -45,13 +51,26 @@ export default function ShiftTab({
 
   useEffect(load, [venueId]);
 
-  const now = useNowTicker();
-  const lastSeen = new Map<number, number>();
-  for (const item of feed) {
-    if (!lastSeen.has(item.from_id) || lastSeen.get(item.from_id)! < item.at) {
-      lastSeen.set(item.from_id, item.at);
-    }
-  }
+  // Присутствие переспрашиваем по таймеру: сокет знает только про себя, а
+  // остальная смена подключается и отваливается независимо от этого экрана.
+  useEffect(() => {
+    let отменено = false;
+    const обновить = () => {
+      fetchPresence(venueId)
+        .then((p) => {
+          if (!отменено) setВЭфире(new Set(p.online_employee_ids));
+        })
+        .catch(() => {
+          // Сеть моргнула — оставляем прошлый список, он честнее пустого.
+        });
+    };
+    обновить();
+    const таймер = window.setInterval(обновить, PRESENCE_POLL_MS);
+    return () => {
+      отменено = true;
+      window.clearInterval(таймер);
+    };
+  }, [venueId]);
 
   if (status === 'loading') return <LoadingState label="Загружаю смену…" />;
   if (status === 'error')
@@ -70,15 +89,14 @@ export default function ShiftTab({
           <Users size={16} /> Сотрудники точки
         </h3>
         <p className="mb-3 text-xs text-stone-500">
-          «В эфире» — говорил по рации последние 5 минут, а не то же самое, что реально на смене.
+          «В эфире» — приложение открыто и телефон на связи прямо сейчас.
         </p>
         <ul className="space-y-2">
           {roster.length === 0 && (
             <li className="text-base text-stone-500">Список пуст — добавьте сотрудников точки.</li>
           )}
           {roster.map((e) => {
-            const seenAt = lastSeen.get(e.id);
-            const isOnAir = seenAt !== undefined && now - seenAt < ONLINE_WINDOW_MS;
+            const isOnAir = вЭфире.has(e.id);
             return (
               <li
                 key={e.id}
@@ -136,15 +154,6 @@ export default function ShiftTab({
       </section>
     </div>
   );
-}
-
-function useNowTicker(): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const t = window.setInterval(() => setNow(Date.now()), 15000);
-    return () => window.clearInterval(t);
-  }, []);
-  return now;
 }
 
 function formatTime(at: number): string {
