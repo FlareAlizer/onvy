@@ -282,7 +282,14 @@ def parse(
 
     body = body.strip(" ,.!?")
     if not body:
-        return Intent(kind=IntentKind.EMPTY if had_wake else IntentKind.IGNORED)
+        # Сказать было нечего. Что делать дальше — зависит от того, кто спросил.
+        #
+        # Кнопку человек нажал сам и ждёт реакции: молчание в ухе он читает как
+        # поломку устройства. А при всегда открытом микрофоне пустая фраза — это
+        # шум зала, и отвечать на него вслух нельзя: телефон заговорит поверх
+        # разговора с гостем.
+        тишина_в_зале = require_wake_word and not had_wake
+        return Intent(kind=IntentKind.IGNORED if тишина_в_зале else IntentKind.EMPTY)
 
     tokens = words(body)
     original = _original_words(body)

@@ -305,3 +305,28 @@ class TestОбращениеБезОнвиПриОткрытомМикрофон
 
         assert intent.kind is IntentKind.IGNORED
         assert intent.payload == ""
+
+
+class TestТишина:
+    """Что делать, когда сказать было нечего, — зависит от того, кто спросил."""
+
+    def test_кнопка_в_тишину_переспрашивает(self):
+        """Человек нажал сам и ждёт реакции: молчание в ухе он читает как
+        поломку устройства. Регрессия — после правки про обращение без «Онви»
+        кнопка в тишину стала молчать."""
+        intent = parse("", colleagues=СМЕНА)
+
+        assert intent.kind is IntentKind.EMPTY
+
+    def test_тишина_при_открытом_микрофоне_остаётся_тишиной(self):
+        """Шум зала. Отвечать на него вслух нельзя: телефон заговорит поверх
+        разговора с гостем."""
+        intent = parse("", colleagues=СМЕНА, require_wake_word=True)
+
+        assert intent.kind is IntentKind.IGNORED
+
+    def test_только_онви_переспрашивает_даже_при_открытом_микрофоне(self):
+        """Человека позвали по имени — значит обращались к нам."""
+        intent = parse("Онви", colleagues=СМЕНА, require_wake_word=True)
+
+        assert intent.kind is IntentKind.EMPTY
