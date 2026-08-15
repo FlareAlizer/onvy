@@ -10,7 +10,8 @@
 помещаться в контекст.
 """
 
-from app.domain.text import sounds_like
+from app.domain.dish_aliases import известна, канон
+from app.domain.text import sounds_like, stem
 from app.domain.text import words as text_words
 from app.ports.menu import MenuItemData
 
@@ -33,14 +34,39 @@ _WEIGHT_COMPOSITION = 1
 
 
 def tokenize(text: str) -> set[str]:
-    """Значимые слова запроса — без служебных и слишком коротких."""
-    return {w for w in text_words(text) if len(w) > 2 and w not in _STOPWORDS}
+    """Значимые слова запроса — без служебных и слишком коротких.
+
+    Соседние слова дополнительно склеиваются, если склейка есть в таблице
+    синонимов: «ачик чучук», «том ям», «люля кебаб» официант произносит
+    раздельно, а в меню они записаны одним словом. Склеиваем только известное —
+    иначе из любой пары слов рождалось бы несуществующее блюдо.
+    """
+    все = text_words(text)
+    значимые = {w for w in все if len(w) > 2 and w not in _STOPWORDS}
+    for первое, второе in zip(все, все[1:], strict=False):
+        склейка = первое + второе
+        if известна(stem(склейка)):
+            значимые.add(склейка)
+    return значимые
 
 
 def _words(text: str | None) -> set[str]:
     return {w for w in text_words(text) if len(w) > 2}
 
 
+
+
+def _похоже(token: str, слово: str) -> bool:
+    """Одно ли это слово для поиска по меню.
+
+    Сначала синонимы: «том ям», «томьям» и «тон ям» — одно блюдо, и формулой это
+    не выводится, тут нужен словарь (app/domain/dish_aliases.py). Затем вольное
+    сравнение на слух: оно вытягивает то, чего в словаре нет и быть не может —
+    названия из меню, загруженного этим заведением сегодня утром.
+    """
+    if канон(stem(token)) == канон(stem(слово)):
+        return True
+    return sounds_like(token, слово, loose=True)
 
 
 def score(query_tokens: set[str], item: MenuItemData) -> int:
@@ -51,11 +77,11 @@ def score(query_tokens: set[str], item: MenuItemData) -> int:
 
     total = 0
     for token in query_tokens:
-        if any(sounds_like(token, w) for w in name_words):
+        if any(_похоже(token, w) for w in name_words):
             total += _WEIGHT_NAME
-        elif any(sounds_like(token, w) for w in category_words):
+        elif any(_похоже(token, w) for w in category_words):
             total += _WEIGHT_CATEGORY
-        elif any(sounds_like(token, w) for w in composition_words):
+        elif any(_похоже(token, w) for w in composition_words):
             total += _WEIGHT_COMPOSITION
     return total
 
