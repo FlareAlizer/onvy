@@ -1,7 +1,7 @@
 // Захват микрофона → сырой PCM 16 kHz mono 16-bit LE (формат lpcm Yandex STT).
 // Работает на localhost и по HTTPS (требование браузера к getUserMedia).
 
-import { сигналВВыход, type ВыходЗвука } from './audioOut';
+import { будитьВместеСВыходом, сигналВВыход, type ВыходЗвука } from './audioOut';
 
 const TARGET_RATE = 16000;
 
@@ -99,6 +99,10 @@ export class WakeListener {
   // оглохнуть навсегда, и именно так Онви «отвечал немного и умирал».
   private busySince = 0;
   private noiseFloor = 0.004; // оценка фонового шума помещения (EMA)
+  private отписатьсяОтПробуждения: (() => void) | null = null;
+  // Сколько буферов пришло с микрофона. Ноль при живом контексте означает, что
+  // звук до нас не доходит, и отличить это от тишины в зале иначе нельзя.
+  private буферов = 0;
 
   constructor(
     private onUtterance: (blob: Blob) => Promise<void>,
@@ -112,12 +116,21 @@ export class WakeListener {
   }
 
   /** Состояние выхода без проигрывания — для строки диагностики на экране. */
-  состояние(): { sampleRate: number; state: string; трекЖив: boolean } {
+  состояние(): {
+    sampleRate: number;
+    state: string;
+    трекЖив: boolean;
+    буферов: number;
+    слышит: boolean;
+  } {
     const дорожка = this.stream?.getAudioTracks()[0];
     return {
       sampleRate: this.ctx?.sampleRate ?? 0,
       state: this.ctx?.state ?? 'нет',
       трекЖив: дорожка?.readyState === 'live',
+      буферов: this.буферов,
+      // Ни одного буфера — микрофон открыт, но звук до обработчика не доходит.
+      слышит: this.буферов > 0,
     };
   }
 
@@ -177,11 +190,18 @@ export class WakeListener {
     this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     this.ctx = new AudioContext();
     await this.ctx.resume().catch(() => {}); // Chrome может стартовать suspended
+    // Микрофон поднимается сам при открытии экрана, то есть без жеста человека,
+    // и этот resume браузер вправе отклонить. Спящий контекст не вызывает
+    // onaudioprocess ни разу: фразы не собираются и на сервер не уходят — Онви
+    // «не реагирует на голос» при живом микрофоне. Поэтому просим разбудить нас
+    // первым же касанием экрана, вместе с выходом звука.
+    this.отписатьсяОтПробуждения = будитьВместеСВыходом(this.ctx);
     this.source = this.ctx.createMediaStreamSource(this.stream);
     this.processor = this.ctx.createScriptProcessor(4096, 1, 1);
     const bufMs = (4096 / this.ctx.sampleRate) * 1000;
 
     this.processor.onaudioprocess = (e) => {
+      this.буферов += 1;
       const buf = new Float32Array(e.inputBuffer.getChannelData(0));
       if (this.busy) return; // ждём ответа на предыдущую фразу
       let sum = 0;
@@ -296,6 +316,9 @@ export class WakeListener {
   }
 
   async stop(): Promise<void> {
+    this.отписатьсяОтПробуждения?.();
+    this.отписатьсяОтПробуждения = null;
+    this.буферов = 0;
     this.processor?.disconnect();
     this.source?.disconnect();
     this.stream?.getTracks().forEach((t) => t.stop());

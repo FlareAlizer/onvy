@@ -241,7 +241,10 @@ export default function WaiterView({ onExit }: Props = {}) {
       const с = слушатель?.состояние();
       записатьСлед(
         `звук ${кб} КБ · играл: ${сыграло ? 'да' : 'НЕТ'}` +
-          (с ? ` · ${с.sampleRate} Гц · ${с.state} · микрофон ${с.трекЖив ? 'жив' : 'МЁРТВ'}` : ' · общий выход'),
+          (с
+            ? ` · ${с.sampleRate} Гц · ${с.state} · буферов ${с.буферов}` +
+              ` · микрофон ${с.трекЖив ? 'жив' : 'МЁРТВ'}`
+            : ' · общий выход'),
       );
       // Тишину нельзя оставлять без объяснения: официант читает её как «не
       // ответил» и переспрашивает, вместо того чтобы коснуться экрана.
@@ -423,6 +426,11 @@ export default function WaiterView({ onExit }: Props = {}) {
     return () => document.removeEventListener('visibilitychange', приВозврате);
   }, [startWakeListener, stopWakeListener]);
 
+  // Слышит ли микрофон на самом деле. Открытая дорожка этого не гарантирует:
+  // спящий звуковой контекст не отдаёт обработчику ни одного буфера, и экран
+  // при этом бодро звал говорить, а фразы никуда не уходили.
+  const [глухой, setГлухой] = useState(false);
+
   // Сторож микрофона.
   //
   // Онви «отвечал немного и умирал»: слушатель молча переставал слышать, а
@@ -439,6 +447,7 @@ export default function WaiterView({ onExit }: Props = {}) {
       void (async () => {
         const слушатель = wakeListenerRef.current;
         if (!слушатель) {
+          setГлухой(false);
           void startWakeListener();
           return;
         }
@@ -449,7 +458,11 @@ export default function WaiterView({ onExit }: Props = {}) {
         if (!слушатель.жив() && !(await слушатель.оживить())) {
           await stopWakeListener();
           void startWakeListener();
+          return;
         }
+        // Дорожка открыта, контекст работает — а буферов нет. Значит звук до
+        // обработчика не доходит, и обещать «Онви слышит» нельзя.
+        setГлухой(!слушатель.состояние().слышит);
       })();
     }, 5000);
     return () => window.clearInterval(сторож);
@@ -603,20 +616,24 @@ export default function WaiterView({ onExit }: Props = {}) {
           нечего включать. Строка нужна только чтобы он видел, что его слышат. */}
       <div
         className={`mx-5 mb-2 flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium ${
-          микрофонНеДоступен ? 'bg-amber-500/15 text-amber-200' : 'bg-stone-900 text-stone-400'
+          микрофонНеДоступен || глухой
+            ? 'bg-amber-500/15 text-amber-200'
+            : 'bg-stone-900 text-stone-400'
         }`}
       >
-        {микрофонНеДоступен ? <EarOff size={16} /> : (
+        {микрофонНеДоступен || глухой ? <EarOff size={16} /> : (
           <Ear size={16} className={wakeState === 'speech' ? 'animate-pulse text-sky-300' : ''} />
         )}
         <span className="min-w-0 flex-1 truncate">
           {микрофонНеДоступен
             ? 'Нет доступа к микрофону — разрешите его в настройках браузера'
-            : wakeState === 'speech'
-              ? 'Слышу вас'
-              : wakeState === 'sending'
-                ? 'Секунду…'
-                : 'Скажите «Онви» — или держите кнопку'}
+            : глухой
+              ? 'Коснитесь экрана — без этого Онви не слышит'
+              : wakeState === 'speech'
+                ? 'Слышу вас'
+                : wakeState === 'sending'
+                  ? 'Секунду…'
+                  : 'Скажите «Онви» — или держите кнопку'}
         </span>
         <button
           type="button"

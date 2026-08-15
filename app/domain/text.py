@@ -99,6 +99,11 @@ def _звуковой(word: str) -> str:
     return "".join(out)
 
 
+def within_edits(first: str, second: str, limit: int) -> bool:
+    """Отличаются ли слова не больше чем на `limit` правок."""
+    return _distance_within(first, second, limit)
+
+
 def _допуск(length: int, loose: bool) -> int:
     """Сколько правок прощаем слову такой длины.
 

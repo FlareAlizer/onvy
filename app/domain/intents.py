@@ -24,7 +24,7 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
-from app.domain.text import normalize, sounds_like, words
+from app.domain.text import normalize, sounds_like, within_edits, words
 
 # --- Вейк-ворд ---
 
@@ -89,6 +89,35 @@ def _is_wake_token(token: str) -> bool:
     # Сравниваем только с основами, не с падежными формами: иначе окно
     # расширится вдвое и в него начнут попадать обычные слова.
     return len(token) == 4 and any(_within_one_edit(token, о) for о in _WAKE_PREFIXES)
+
+
+# Насколько далеко от написания слово ещё считается «похожим на имя» — не для
+# распознавания обращения, а только для диагностики промахов (см. ниже).
+_WAKE_NEAR_EDITS = 2
+
+
+def почти_обращение(text: str) -> str | None:
+    """Слово, похожее на «Онви», но обращением НЕ признанное.
+
+    Существует ради одного вопроса, на который иначе нет ответа: почему при
+    живом микрофоне ассистент молчит голосом. Отброшенную фразу мы намеренно не
+    сохраняем и не логируем (см. app/services/assistant_flow.py), поэтому узнать,
+    что распознавание услышало вместо имени, было нельзя вовсе.
+
+    Условие нарочно узкое: слово стоит в начале фразы, длиной 4–6 букв и
+    отличается от написания не больше чем на две правки. Обычная речь гостя под
+    это не подходит и в лог не попадает — в него попадают только исковерканные
+    написания имени самого ассистента.
+    """
+    tokens = words(text)
+    for token in tokens[:2]:
+        if _is_wake_token(token):
+            return None
+        if 4 <= len(token) <= 6 and any(
+            within_edits(token, основа, _WAKE_NEAR_EDITS) for основа in _WAKE_PREFIXES
+        ):
+            return token
+    return None
 
 
 def detect_wake_word(text: str) -> tuple[bool, str]:

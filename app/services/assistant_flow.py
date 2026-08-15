@@ -19,6 +19,7 @@ from app.domain.intents import (
     IntentKind,
     detect_wake_word,
     parse,
+    почти_обращение,
 )
 from app.domain.language import Language
 from app.domain.menu_search import search
@@ -73,6 +74,9 @@ class AssistantOutcome:
     addressed_assistant: bool = False
     # Что именно отвалилось: asr, answer, tts. Пусто — всё отработало штатно.
     degraded: str | None = None
+    # Слово, похожее на «Онви», но обращением не признанное. Только для логов:
+    # наружу, на телефон и в базу, не уходит.
+    wake_near_miss: str | None = None
     metrics: StageMetrics = field(default_factory=StageMetrics)
 
 
@@ -127,8 +131,17 @@ async def handle_voice_query(
     # Не «оптимизация» и не забывчивость: если понадобится узнать, что человек
     # сказал не нам, — значит, требование изменилось, и менять его надо осознанно,
     # вместе с юридической частью (спека §7), а не правкой одной строки.
+    #
+    # Единственное, что переживает эту границу, — исковерканное написание имени
+    # самого ассистента, и только оно (см. почти_обращение). Речь гостя под
+    # условие не подходит: без этого нельзя отличить «фразу не нам» от «имя
+    # услышали не так, и продукт молчит при живом микрофоне».
     if intent.kind is IntentKind.IGNORED:
-        return AssistantOutcome(kind=intent.kind, metrics=metrics)
+        return AssistantOutcome(
+            kind=intent.kind,
+            wake_near_miss=почти_обращение(recognized.text),
+            metrics=metrics,
+        )
 
     # Реплику в рацию озвучивать ассистентом не надо — её доставит служба связи.
     if intent.kind in (IntentKind.SEND_GROUP, IntentKind.SEND_PERSON):
