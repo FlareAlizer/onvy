@@ -68,6 +68,53 @@ if (typeof window !== 'undefined') {
   }
 }
 
+/** Что мы знаем про выход звука — для проверки на самом телефоне. */
+export type ВыходЗвука = {
+  ok: boolean;
+  /** Частота дискретизации контекста. 8000/16000 — телефон переключил гарнитуру
+   *  в режим телефонного разговора, и обычное воспроизведение в неё не идёт. */
+  sampleRate: number;
+  state: string;
+};
+
+/**
+ * Короткий сигнал в тот же выход, куда играет ответ ассистента.
+ *
+ * Нужен, чтобы на смене отличать «ассистент не ответил» от «ответил, но звук
+ * ушёл не в то ухо». По логам это неразличимо: сервер в обоих случаях
+ * отработал одинаково, а разница целиком на устройстве.
+ */
+export async function сигналВВыход(c: AudioContext): Promise<boolean> {
+  try {
+    if (c.state === 'suspended') await c.resume();
+    await new Promise<void>((resolve) => {
+      const тон = c.createOscillator();
+      const громкость = c.createGain();
+      тон.frequency.value = 660;
+      // Плавный вход и выход: щелчок в ухе на смене пугает сильнее сигнала.
+      громкость.gain.setValueAtTime(0.0001, c.currentTime);
+      громкость.gain.exponentialRampToValueAtTime(0.2, c.currentTime + 0.05);
+      громкость.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + 0.45);
+      тон.connect(громкость);
+      громкость.connect(c.destination);
+      тон.onended = () => resolve();
+      тон.start();
+      тон.stop(c.currentTime + 0.5);
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Проверить общий выход (когда микрофон не открыт — например, у управляющего). */
+export async function проверитьВыход(): Promise<ВыходЗвука> {
+  const c = контекст();
+  if (!c) return { ok: false, sampleRate: 0, state: 'нет' };
+  const ok = await сигналВВыход(c);
+  return { ok, sampleRate: c.sampleRate, state: c.state };
+}
+
 function base64ВБайты(b64: string): Uint8Array {
   const строка = atob(b64);
   const байты = new Uint8Array(строка.length);

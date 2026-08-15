@@ -1,6 +1,8 @@
 // Захват микрофона → сырой PCM 16 kHz mono 16-bit LE (формат lpcm Yandex STT).
 // Работает на localhost и по HTTPS (требование браузера к getUserMedia).
 
+import { сигналВВыход, type ВыходЗвука } from './audioOut';
+
 const TARGET_RATE = 16000;
 
 let audioCtx: AudioContext | null = null;
@@ -210,6 +212,27 @@ export class WakeListener {
       return true;
     } catch {
       return false;
+    } finally {
+      this.busy = былЗанят;
+    }
+  }
+
+  /**
+   * Сигнал в тот же выход, куда играет ответ ассистента.
+   *
+   * Смысл проверки: по серверу «ответил» и «ответил, но в ухе тишина»
+   * неразличимы — синтез в обоих случаях отработал. Отличить это можно только
+   * на самом телефоне, и делать это должен официант за пять секунд, а не мы
+   * по логам через час.
+   */
+  async проверитьВыход(): Promise<ВыходЗвука> {
+    const c = this.ctx;
+    if (!c) return { ok: false, sampleRate: 0, state: 'нет' };
+    const былЗанят = this.busy;
+    this.busy = true;
+    try {
+      const ok = await сигналВВыход(c);
+      return { ok, sampleRate: c.sampleRate, state: c.state };
     } finally {
       this.busy = былЗанят;
     }

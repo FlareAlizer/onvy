@@ -32,6 +32,7 @@ import {
   sendVoice,
   type VoiceResult,
 } from '../lib/api';
+import { проверитьВыход } from '../lib/audioOut';
 import { useComms } from '../lib/comms';
 import { startRecording, stopRecording, WakeListener } from '../lib/recorder';
 import { ScreenAwake } from '../lib/screenlock';
@@ -112,6 +113,36 @@ export default function WaiterView({ onExit }: Props = {}) {
   const [wakeState, setWakeState] = useState<'idle' | 'speech' | 'sending'>('idle');
   const [микрофонНеДоступен, setМикрофонНеДоступен] = useState(false);
   const wakeListenerRef = useRef<WakeListener | null>(null);
+
+  // Проверка звука в ухе. Нужна потому, что «ассистент не ответил» и «ответил,
+  // но звук ушёл мимо гарнитуры» на смене выглядят одинаково — тишиной, — а по
+  // логам сервера неразличимы вовсе: синтез отрабатывает в обоих случаях.
+  const [звукИтог, setЗвукИтог] = useState<string | null>(null);
+  const [звукИдёт, setЗвукИдёт] = useState(false);
+
+  const проверитьЗвук = useCallback(async () => {
+    setЗвукИдёт(true);
+    setЗвукИтог(null);
+    try {
+      const итог = wakeListenerRef.current
+        ? await wakeListenerRef.current.проверитьВыход()
+        : await проверитьВыход();
+      if (!итог.ok) {
+        setЗвукИтог('Сигнал не проиграть. Коснитесь экрана и нажмите ещё раз.');
+      } else if (итог.sampleRate > 0 && итог.sampleRate <= 16000) {
+        // Телефон перевёл беспроводную гарнитуру в режим телефонного разговора:
+        // микрофон в ней работает, а музыкальный канал на это время выключен.
+        setЗвукИтог(
+          `Гарнитура в режиме разговора (${итог.sampleRate} Гц) — ответы в неё не пойдут. ` +
+            'Возьмите проводную или отключите Bluetooth.',
+        );
+      } else {
+        setЗвукИтог(`Звук идёт (${итог.sampleRate} Гц). Не услышали — проверьте громкость.`);
+      }
+    } finally {
+      setЗвукИдёт(false);
+    }
+  }, []);
 
   // Выбор адресата пальцем и отправка текстом — запасной путь для того же
   // случая, когда голосом неудобно (шум, не хочет говорить при госте).
@@ -520,7 +551,22 @@ export default function WaiterView({ onExit }: Props = {}) {
                 ? 'Секунду…'
                 : 'Скажите «Онви» — или держите кнопку'}
         </span>
+        <button
+          type="button"
+          onClick={() => void проверитьЗвук()}
+          disabled={звукИдёт}
+          style={{ minHeight: 32 }}
+          className="shrink-0 rounded-lg bg-stone-800 px-3 text-xs font-semibold text-stone-300 disabled:text-stone-600"
+        >
+          {звукИдёт ? '…' : 'Звук'}
+        </button>
       </div>
+
+      {звукИтог && (
+        <p className="mx-5 mb-2 rounded-xl bg-stone-900 px-4 py-2.5 text-xs leading-relaxed text-stone-300">
+          {звукИтог}
+        </p>
+      )}
 
       {панельОткрыта && (
         <div className="mx-5 mb-2 rounded-2xl bg-stone-900/60 px-4 py-3">
