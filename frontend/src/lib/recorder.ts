@@ -189,9 +189,15 @@ export class WakeListener {
    * обязан **дождаться** этого метода. Вызвать его без await — значит снять
    * busy раньше конца фразы и получить зацикливание: ассистент услышит сам
    * себя и ответит на собственный ответ. */
-  async playMp3(b64: string): Promise<void> {
-    if (!this.ctx) return;
+  async playMp3(b64: string): Promise<boolean> {
+    if (!this.ctx) return false;
+    // Флаг занятости держим и здесь, а не только в пути постоянного
+    // прослушивания: тем же методом играет ответ на нажатие кнопки, а там
+    // busy никто не выставлял — и Онви слышал сам себя из динамика.
+    const былЗанят = this.busy;
+    this.busy = true;
     try {
+      if (this.ctx.state === 'suspended') await this.ctx.resume();
       const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
       const audioBuf = await this.ctx.decodeAudioData(bytes.buffer.slice(0) as ArrayBuffer);
       await new Promise<void>((resolve) => {
@@ -201,7 +207,12 @@ export class WakeListener {
         src.onended = () => resolve();
         src.start();
       });
-    } catch { /* не смогли проиграть — не критично */ }
+      return true;
+    } catch {
+      return false;
+    } finally {
+      this.busy = былЗанят;
+    }
   }
 
   async stop(): Promise<void> {

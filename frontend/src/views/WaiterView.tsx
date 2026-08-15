@@ -160,12 +160,24 @@ export default function WaiterView({ onExit }: Props = {}) {
     [push],
   );
 
-  // Путь кнопки и текстового ввода: звук играет обычным Audio-элементом,
-  // отдельным от AudioContext постоянного прослушивания.
+  // Путь кнопки и текстового ввода.
+  //
+  // Играем тем же AudioContext, что и постоянное прослушивание, а не отдельным
+  // Audio-элементом. Элемент здесь молчал: `play()` вызывается уже после ответа
+  // сервера, когда разрешение на автоплей от нажатия истекло, и уходит мимо
+  // гарнитуры, пока та переключена в режим связи захватом микрофона. На живом
+  // официанте это выглядело так: ответ на экране есть, в ухе тишина.
   const handleResult = useCallback(
-    (result: VoiceResult) => {
+    async (result: VoiceResult) => {
       applyResult(result);
-      if (result.audio_base64) void playAudio(result.audio_base64, result.mime_type);
+      if (!result.audio_base64) return;
+      const слушатель = wakeListenerRef.current;
+      const сыграло = слушатель
+        ? await слушатель.playMp3(result.audio_base64)
+        : await playAudio(result.audio_base64, result.mime_type);
+      // Тишину нельзя оставлять без объяснения: официант читает её как «не
+      // ответил» и переспрашивает, вместо того чтобы коснуться экрана.
+      if (!сыграло) setError('Звук выключен — коснитесь экрана и спросите ещё раз.');
     },
     [applyResult],
   );
@@ -202,8 +214,8 @@ export default function WaiterView({ onExit }: Props = {}) {
           method: 'POST',
           body: JSON.stringify({ text: сообщение }),
         });
-        handleResult(ответ);
         setТекст('');
+        await handleResult(ответ);
         return;
       }
       const тело =
@@ -251,7 +263,8 @@ export default function WaiterView({ onExit }: Props = {}) {
           // Играем через AudioContext самого слушателя, а не обычный Audio:
           // пока идёт playMp3, обработчик микрофона остаётся «занят» (busy) и
           // не подхватит собственный голос ассистента из динамика телефона.
-          await wakeListenerRef.current?.playMp3(result.audio_base64);
+          const сыграло = await wakeListenerRef.current?.playMp3(result.audio_base64);
+          if (!сыграло) setError('Звук выключен — коснитесь экрана и спросите ещё раз.');
         }
       } catch (сбой) {
         // 429 — это не «связь плохая», а «зал шумит и мы выбрали бюджет минуты».
@@ -397,7 +410,11 @@ export default function WaiterView({ onExit }: Props = {}) {
             ? { employeeId: кому.id }
             : { group: кому.group },
       );
-      handleResult(result);
+      // Кнопку отпускаем сразу, а ответ дослушиваем: пока он играет, микрофон
+      // постоянного прослушивания поднимать нельзя — иначе Онви услышит свой
+      // собственный ответ из динамика и ответит на него.
+      setPhase('idle');
+      await handleResult(result);
     } catch {
       setError('Не отправилось. Проверьте связь и повторите.');
     } finally {

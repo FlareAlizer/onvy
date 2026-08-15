@@ -4,6 +4,8 @@
 // незаметным: официант не может оказаться разлогиненным посреди зала.
 // Поэтому любой 401 один раз пробует refresh и повторяет запрос.
 
+import { playBase64 } from './audioOut';
+
 export type Session = {
   accessToken: string;
   refreshToken: string;
@@ -371,9 +373,18 @@ export type IncomingMessage = {
   mime_type: string;
 };
 
-/** Проиграть ответ ассистента или голос коллеги. */
-export function playAudio(base64: string, mime = 'audio/mpeg'): Promise<void> {
-  return new Audio(`data:${mime};base64,${base64}`).play().catch(() => undefined);
+/**
+ * Проиграть ответ ассистента или голос коллеги.
+ *
+ * Через общий выход (lib/audioOut.ts), а не через свежий `new Audio()`: тот на
+ * телефоне молча не играет, потому что вызывается уже после ответа сервера,
+ * когда разрешение на автоплей истекло, и уходит мимо гарнитуры.
+ *
+ * false — не проиграли. Молчать об этом нельзя: для официанта тишина выглядит
+ * как «ассистент не ответил».
+ */
+export function playAudio(base64: string, mime = 'audio/mpeg'): Promise<boolean> {
+  return playBase64(base64, mime);
 }
 
 // --- KPI (app/api/kpi.py) -------------------------------------------------
