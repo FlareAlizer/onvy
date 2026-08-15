@@ -176,15 +176,41 @@ function refreshSession(): Promise<boolean> {
   return refreshInFlight;
 }
 
-type RequestOptions = RequestInit & { retryOnAuthFailure?: boolean };
+type RequestOptions = RequestInit & {
+  retryOnAuthFailure?: boolean;
+  /** Оборвать запрос, если ответа нет столько миллисекунд. */
+  timeoutMs?: number;
+};
 
+/**
+ * Запрос без срока — это зависание навсегда.
+ *
+ * Вайфай в зале не «отваливается», а зависает: соединение установлено, ответ не
+ * идёт, `fetch` ждёт молча и бесконечно. Для голосового пути это смертельно:
+ * микрофон помечен занятым до конца запроса, и пока тот висит, Онви не слышит
+ * вообще ничего — при живом экране и надписи «Скажите Онви». Именно так он
+ * «отвечал немного и помер».
+ */
 async function request(path: string, options: RequestOptions = {}): Promise<Response> {
-  const { retryOnAuthFailure = true, ...init } = options;
+  const { retryOnAuthFailure = true, timeoutMs, ...init } = options;
   const session = getSession();
   const headers = new Headers(init.headers);
   if (session) headers.set('Authorization', `Bearer ${session.accessToken}`);
 
-  const resp = await fetch(`/api${path}`, { ...init, headers });
+  let срок: number | undefined;
+  let signal = init.signal ?? undefined;
+  if (timeoutMs && !signal) {
+    const обрыв = new AbortController();
+    срок = window.setTimeout(() => обрыв.abort(), timeoutMs);
+    signal = обрыв.signal;
+  }
+
+  let resp: Response;
+  try {
+    resp = await fetch(`/api${path}`, { ...init, headers, signal });
+  } finally {
+    if (срок !== undefined) window.clearTimeout(срок);
+  }
   if (resp.status !== 401 || !retryOnAuthFailure) return resp;
 
   // Токен протух посреди смены — обновляем и повторяем ровно один раз.
@@ -348,7 +374,14 @@ export async function sendVoice(
   form.append('always_on', String(alwaysOn));
   if (target?.employeeId !== undefined) form.append('to_employee_id', String(target.employeeId));
   else if (target?.group) form.append('to_group', target.group);
-  const resp = await request('/voice/push-to-talk', { method: 'POST', body: form });
+  // Двадцати секунд хватает самому долгому пути (распознавание + модель +
+  // синтез укладываются в две-три). Всё, что дольше, — зависшее соединение, и
+  // ждать его нельзя: микрофон официанта заперт на всё это время.
+  const resp = await request('/voice/push-to-talk', {
+    method: 'POST',
+    body: form,
+    timeoutMs: 20_000,
+  });
   if (!resp.ok) throw new ApiError(await readError(resp), resp.status);
   return (await resp.json()) as VoiceResult;
 }

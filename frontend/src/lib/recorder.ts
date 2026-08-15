@@ -79,6 +79,10 @@ const SILENCE_MS = 1200;      // пауза, после которой фраз�
 const MIN_SPEECH_MS = 400;    // короче — шум, не отправляем
 const MAX_UTTERANCE_MS = 12000; // страховка от бесконечной фразы
 const PREROLL_BUFFERS = 10;   // ~1 c пре-ролла при буфере 4096/44.1kHz
+// Дольше этого «занят» быть не может: запрос ограничен двадцатью секундами,
+// ответ ассистента редко длиннее десяти. Всё сверх — застрявшее состояние,
+// из которого сам по себе слушатель уже не выйдет.
+const BUSY_MAX_MS = 35000;
 
 export class WakeListener {
   private ctx: AudioContext | null = null;
@@ -91,6 +95,9 @@ export class WakeListener {
   private speechMs = 0;
   private silenceMs = 0;
   private busy = false; // пока запрос в полёте / играет ответ — не пишем новую фразу
+  // Когда пометили занятым. Нужен сторожу: занятость без срока — это способ
+  // оглохнуть навсегда, и именно так Онви «отвечал немного и умирал».
+  private busySince = 0;
   private noiseFloor = 0.004; // оценка фонового шума помещения (EMA)
 
   constructor(
@@ -102,6 +109,38 @@ export class WakeListener {
   жив(): boolean {
     const дорожка = this.stream?.getAudioTracks()[0];
     return this.ctx?.state === 'running' && !!дорожка && дорожка.readyState === 'live';
+  }
+
+  private занять(): void {
+    this.busy = true;
+    this.busySince = Date.now();
+  }
+
+  private освободить(): void {
+    this.busy = false;
+    this.busySince = 0;
+  }
+
+  /**
+   * Снять зависшую занятость.
+   *
+   * Занятость держится, пока идёт запрос и играет ответ, и снимается в
+   * `finally`. Но `finally` не выполнится, если промис не завершится вовсе:
+   * повисший запрос без срока, недоигравший звук, у которого не пришло
+   * `onended`. Тогда микрофон заперт навсегда, при живом экране и надписи
+   * «Скажите Онви» — снаружи это выглядит как «Онви умер».
+   *
+   * Возвращает true, если пришлось вмешаться, — вызывающий должен сказать об
+   * этом человеку, иначе он так и будет говорить в пустоту.
+   */
+  разбудитьЕслиЗастрял(): boolean {
+    if (!this.busy || Date.now() - this.busySince < BUSY_MAX_MS) return false;
+    this.освободить();
+    this.speaking = false;
+    this.utterance = [];
+    this.preroll = [];
+    this.onState?.('idle');
+    return true;
   }
 
   /**
@@ -168,12 +207,12 @@ export class WakeListener {
       this.utterance = [];
       if (this.speechMs - this.silenceMs < MIN_SPEECH_MS) { this.onState?.('idle'); return; }
 
-      this.busy = true;
+      this.занять();
       this.onState?.('sending');
       const inRate = this.ctx?.sampleRate ?? 44100;
       const blob = new Blob([toInt16(downsample(flatten(frames), inRate))], { type: 'application/octet-stream' });
       void this.onUtterance(blob).finally(() => {
-        this.busy = false;
+        this.освободить();
         this.onState?.('idle');
       });
     };
@@ -197,7 +236,8 @@ export class WakeListener {
     // прослушивания: тем же методом играет ответ на нажатие кнопки, а там
     // busy никто не выставлял — и Онви слышал сам себя из динамика.
     const былЗанят = this.busy;
-    this.busy = true;
+    const былоС = this.busySince;
+    this.занять();
     try {
       if (this.ctx.state === 'suspended') await this.ctx.resume();
       const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
@@ -208,12 +248,17 @@ export class WakeListener {
         src.connect(this.ctx!.destination);
         src.onended = () => resolve();
         src.start();
+        // Длительность ответа известна заранее, поэтому ждать `onended` без
+        // страховки незачем: если телефон приглушит вкладку посреди фразы,
+        // событие не придёт никогда, и микрофон останется заперт навсегда.
+        window.setTimeout(resolve, audioBuf.duration * 1000 + 2000);
       });
       return true;
     } catch {
       return false;
     } finally {
       this.busy = былЗанят;
+      this.busySince = былоС;
     }
   }
 
@@ -229,12 +274,14 @@ export class WakeListener {
     const c = this.ctx;
     if (!c) return { ok: false, sampleRate: 0, state: 'нет' };
     const былЗанят = this.busy;
-    this.busy = true;
+    const былоС = this.busySince;
+    this.занять();
     try {
       const ok = await сигналВВыход(c);
       return { ok, sampleRate: c.sampleRate, state: c.state };
     } finally {
       this.busy = былЗанят;
+      this.busySince = былоС;
     }
   }
 
@@ -244,6 +291,7 @@ export class WakeListener {
     this.stream?.getTracks().forEach((t) => t.stop());
     if (this.ctx) await this.ctx.close().catch(() => {});
     this.ctx = null; this.stream = null; this.processor = null; this.source = null;
-    this.preroll = []; this.utterance = []; this.speaking = false; this.busy = false;
+    this.preroll = []; this.utterance = []; this.speaking = false;
+    this.освободить();
   }
 }

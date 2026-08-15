@@ -304,7 +304,9 @@ export default function WaiterView({ onExit }: Props = {}) {
         setError(
           сбой instanceof ApiError && сбой.status === 429
             ? 'Онви слушает слишком много шума — подождите минуту или выключите режим.'
-            : 'Онви не расслышал — проверьте связь.',
+            : сбой instanceof DOMException && сбой.name === 'AbortError'
+              ? 'Сервер не ответил за двадцать секунд — проверьте вайфай и повторите.'
+              : 'Онви не расслышал — проверьте связь.',
         );
       }
     },
@@ -386,6 +388,38 @@ export default function WaiterView({ onExit }: Props = {}) {
     };
     document.addEventListener('visibilitychange', приВозврате);
     return () => document.removeEventListener('visibilitychange', приВозврате);
+  }, [startWakeListener, stopWakeListener]);
+
+  // Сторож микрофона.
+  //
+  // Онви «отвечал немного и умирал»: слушатель молча переставал слышать, а
+  // экран продолжал звать говорить. Умереть он может двумя способами, и оба не
+  // сообщают о себе никак. Первый — застрявшая занятость: повисший запрос или
+  // недоигравший ответ не снимают флаг, и каждая следующая фраза выбрасывается.
+  // Второй — систему забрала звуковую дорожку (звонок, другое приложение,
+  // переключение гарнитуры), и микрофон мёртв при живой вкладке.
+  //
+  // Проверка по visibilitychange это не ловит: официант с экрана не уходит.
+  // Поэтому смотрим сами, раз в несколько секунд, всю смену.
+  useEffect(() => {
+    const сторож = window.setInterval(() => {
+      void (async () => {
+        const слушатель = wakeListenerRef.current;
+        if (!слушатель) {
+          void startWakeListener();
+          return;
+        }
+        if (слушатель.разбудитьЕслиЗастрял()) {
+          setError('Связь подвисла — Онви снова слушает. Повторите вопрос.');
+          return;
+        }
+        if (!слушатель.жив() && !(await слушатель.оживить())) {
+          await stopWakeListener();
+          void startWakeListener();
+        }
+      })();
+    }, 5000);
+    return () => window.clearInterval(сторож);
   }, [startWakeListener, stopWakeListener]);
 
   // Закрыть микрофон постоянного прослушивания при уходе с экрана — иначе
