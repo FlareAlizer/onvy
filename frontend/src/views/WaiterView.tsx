@@ -79,6 +79,10 @@ type FeedItem = {
   at: number;
 };
 
+// Метка сборки. Меняется руками при каждом выкате, который надо подтвердить на
+// смене: по ней сразу видно, обновил телефон страницу или показывает вчерашнее.
+const СБОРКА = '15.08-4';
+
 const DEGRADED_TEXT: Record<string, string> = {
   asr: 'Не расслышал',
   answer: 'Ассистент недоступен, связь работает',
@@ -119,6 +123,15 @@ export default function WaiterView({ onExit }: Props = {}) {
   // логам сервера неразличимы вовсе: синтез отрабатывает в обоих случаях.
   const [звукИтог, setЗвукИтог] = useState<string | null>(null);
   const [звукИдёт, setЗвукИдёт] = useState(false);
+
+  // Что произошло с последним ответом на самом телефоне.
+  //
+  // В базе видно только серверную половину, и она каждый раз в порядке: текст
+  // распознан, ответ составлен, звук синтезирован. Вторая половина — доехал ли
+  // звук до уха — целиком на устройстве, и оттуда до сих пор не было ни одного
+  // факта. Поэтому строка показывается прямо на экране: официант читает её
+  // вслух, и мы перестаём гадать.
+  const [следЗвука, setСледЗвука] = useState<string | null>(null);
 
   const проверитьЗвук = useCallback(async () => {
     setЗвукИдёт(true);
@@ -201,11 +214,20 @@ export default function WaiterView({ onExit }: Props = {}) {
   const handleResult = useCallback(
     async (result: VoiceResult) => {
       applyResult(result);
-      if (!result.audio_base64) return;
       const слушатель = wakeListenerRef.current;
+      const кб = result.audio_base64 ? Math.round((result.audio_base64.length * 3) / 4096) : 0;
+      if (!result.audio_base64) {
+        setСледЗвука(`${СБОРКА} · звука в ответе нет (${result.degraded ?? 'причина не указана'})`);
+        return;
+      }
       const сыграло = слушатель
         ? await слушатель.playMp3(result.audio_base64)
         : await playAudio(result.audio_base64, result.mime_type);
+      const с = слушатель?.состояние();
+      setСледЗвука(
+        `${СБОРКА} · звук ${кб} КБ · играл: ${сыграло ? 'да' : 'НЕТ'}` +
+          (с ? ` · ${с.sampleRate} Гц · ${с.state} · микрофон ${с.трекЖив ? 'жив' : 'МЁРТВ'}` : ' · общий выход'),
+      );
       // Тишину нельзя оставлять без объяснения: официант читает её как «не
       // ответил» и переспрашивает, вместо того чтобы коснуться экрана.
       if (!сыграло) setError('Звук выключен — коснитесь экрана и спросите ещё раз.');
@@ -289,14 +311,10 @@ export default function WaiterView({ onExit }: Props = {}) {
               ? { employeeId: кому.id }
               : { group: кому.group },
         );
-        applyResult(result);
-        if (result.audio_base64) {
-          // Играем через AudioContext самого слушателя, а не обычный Audio:
-          // пока идёт playMp3, обработчик микрофона остаётся «занят» (busy) и
-          // не подхватит собственный голос ассистента из динамика телефона.
-          const сыграло = await wakeListenerRef.current?.playMp3(result.audio_base64);
-          if (!сыграло) setError('Звук выключен — коснитесь экрана и спросите ещё раз.');
-        }
+        // Тот же путь, что у кнопки и текста: играем через AudioContext самого
+        // слушателя (пока идёт playMp3, микрофон помечен занятым и не подхватит
+        // голос ассистента из динамика) и оставляем след для диагностики.
+        await handleResult(result);
       } catch (сбой) {
         // 429 — это не «связь плохая», а «зал шумит и мы выбрали бюджет минуты».
         // Раньше оба случая выглядели одинаково, и официант чинил вайфай вместо
@@ -310,7 +328,7 @@ export default function WaiterView({ onExit }: Props = {}) {
         );
       }
     },
-    [applyResult],
+    [handleResult],
   );
 
   // Занимаем место ДО await: getUserMedia и AudioContext на телефоне
@@ -601,6 +619,13 @@ export default function WaiterView({ onExit }: Props = {}) {
           {звукИтог}
         </p>
       )}
+
+      {/* След последнего ответа. Некрасиво и намеренно на виду: пока причина
+          тишины не найдена, эта строка — единственный источник фактов с самого
+          телефона. Убрать сразу, как только перестанет быть нужна. */}
+      <p className="mx-5 mb-2 font-mono text-[11px] leading-relaxed text-stone-500">
+        {следЗвука ?? `${СБОРКА} · ответов ещё не было`}
+      </p>
 
       {панельОткрыта && (
         <div className="mx-5 mb-2 rounded-2xl bg-stone-900/60 px-4 py-3">

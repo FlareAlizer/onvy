@@ -111,6 +111,16 @@ export class WakeListener {
     return this.ctx?.state === 'running' && !!дорожка && дорожка.readyState === 'live';
   }
 
+  /** Состояние выхода без проигрывания — для строки диагностики на экране. */
+  состояние(): { sampleRate: number; state: string; трекЖив: boolean } {
+    const дорожка = this.stream?.getAudioTracks()[0];
+    return {
+      sampleRate: this.ctx?.sampleRate ?? 0,
+      state: this.ctx?.state ?? 'нет',
+      трекЖив: дорожка?.readyState === 'live',
+    };
+  }
+
   private занять(): void {
     this.busy = true;
     this.busySince = Date.now();
