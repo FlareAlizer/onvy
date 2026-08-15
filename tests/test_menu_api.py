@@ -411,6 +411,78 @@ async def test_duplicate_name_is_rejected_with_409(
 
 
 @pytest.mark.needs_db
+async def test_same_name_in_different_categories_are_separate_items(
+    pg_client: AsyncClient, pg_session_maker
+) -> None:
+    """Настоящее меню: «Чай облепиховый» стоит и в чайниках, и порционно — разная
+    цена, разный выход. Раньше вторая позиция получала 409 «уже есть в меню», и
+    заведение молча теряло половину карты при загрузке файла."""
+    venue_id = await _make_venue(pg_session_maker)
+    manager_id = await _make_manager(pg_session_maker, venue_id)
+    token = await _login(pg_client, manager_id, "9999")
+
+    чайник = await pg_client.post(
+        f"/api/venues/{venue_id}/menu",
+        json={"name": "Чай облепиховый", "category": "Чайники", "price": "690"},
+        headers=_auth(token),
+    )
+    assert чайник.status_code == 201
+
+    порция = await pg_client.post(
+        f"/api/venues/{venue_id}/menu",
+        json={"name": "Чай облепиховый", "category": "Порционно", "price": "250"},
+        headers=_auth(token),
+    )
+    assert порция.status_code == 201
+
+    listed = await pg_client.get(f"/api/venues/{venue_id}/menu", headers=_auth(token))
+    assert len(listed.json()) == 2
+
+    # А вот повтор внутри одного раздела — по-прежнему конфликт.
+    повтор = await pg_client.post(
+        f"/api/venues/{venue_id}/menu",
+        json={"name": "Чай облепиховый", "category": "Чайники", "price": "700"},
+        headers=_auth(token),
+    )
+    assert повтор.status_code == 409
+
+    # Перенос позиции в раздел, где тёзка уже стоит, — тот же конфликт.
+    переезд = await pg_client.patch(
+        f"/api/venues/{venue_id}/menu/{порция.json()['id']}",
+        json={"category": "Чайники"},
+        headers=_auth(token),
+    )
+    assert переезд.status_code == 409
+
+
+@pytest.mark.needs_db
+async def test_import_keeps_same_name_across_categories_and_rejects_only_true_duplicates(
+    pg_client: AsyncClient, pg_session_maker
+) -> None:
+    venue_id = await _make_venue(pg_session_maker)
+    manager_id = await _make_manager(pg_session_maker, venue_id)
+    token = await _login(pg_client, manager_id, "9999")
+
+    файл = (
+        "название;раздел;цена\n"
+        "Чай облепиховый;Чайники;690\n"
+        "Чай облепиховый;Порционно;250\n"
+        "Чай облепиховый;Чайники;700\n"  # вот это — настоящий дубликат
+    ).encode()
+
+    preview = await pg_client.post(
+        f"/api/venues/{venue_id}/menu/import",
+        files={"file": ("menu.csv", файл, "text/csv")},
+        headers=_auth(token),
+    )
+    assert preview.status_code == 200
+    body = preview.json()
+    assert len(body["to_create"]) == 2
+    assert len(body["rejected"]) == 1
+    assert body["rejected"][0]["line_number"] == 4
+
+
+@pytest.mark.needs_db
 async def test_patch_omitted_field_unchanged_explicit_null_resets_allergens(
     pg_client: AsyncClient, pg_session_maker
 ) -> None:

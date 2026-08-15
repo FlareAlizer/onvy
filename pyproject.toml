@@ -28,6 +28,9 @@ dev = [
     "respx",
     "aiosqlite",
     "fakeredis>=2.37.0",
+    # Только для scripts/pdf_menu_to_xlsx.py — разобрать «учебное пособие»
+    # заведения в таблицу. В образ не входит: сервер PDF не читает.
+    "pdfplumber",
 ]
 
 [tool.ruff]

@@ -51,9 +51,14 @@ class MenuItemNotFoundError(MenuServiceError):
 
 
 class DuplicateMenuItemNameError(MenuServiceError):
-    def __init__(self, name: str) -> None:
-        super().__init__(f"Позиция с названием «{name}» уже есть в меню точки")
+    """Название занято ВНУТРИ раздела. Одно название в разных разделах — норма
+    («Чай облепиховый» в чайниках и порционно), конфликтом это не считается."""
+
+    def __init__(self, name: str, category: str = "") -> None:
+        где = f"в разделе «{category}»" if category else "в меню без раздела"
+        super().__init__(f"Позиция «{name}» уже есть {где}")
         self.name = name
+        self.category = category
 
 
 class NotOnStopListError(MenuServiceError):
@@ -243,12 +248,18 @@ async def stop_list_view(
 # --- CRUD позиций меню -------------------------------------------------------
 
 
-async def _find_active_by_name(session: AsyncSession, venue_id: int, name: str) -> MenuItem | None:
+async def _find_active(
+    session: AsyncSession, venue_id: int, name: str, category: str | None
+) -> MenuItem | None:
+    """Позиция точки по названию И разделу — так же, как её опознаёт уникальный
+    индекс (ux_menu_items_venue_name_category_active). Одно название в разных
+    разделах — разные позиции с разной ценой, а не дубликат."""
     return (
         await session.execute(
             select(MenuItem).where(
                 MenuItem.venue_id == venue_id,
                 MenuItem.name == name,
+                MenuItem.category == (category or ""),
                 MenuItem.deleted_at.is_(None),
             )
         )
@@ -278,8 +289,8 @@ async def create_menu_item(
     weight_grams: int | None = None,
     prep_time_minutes: int | None = None,
 ) -> MenuItem:
-    if await _find_active_by_name(session, venue_id, name) is not None:
-        raise DuplicateMenuItemNameError(name)
+    if await _find_active(session, venue_id, name, category) is not None:
+        raise DuplicateMenuItemNameError(name, category or "")
     item = MenuItem(
         venue_id=venue_id,
         name=name,
@@ -326,16 +337,21 @@ async def update_menu_item(
     if unknown:
         raise ValueError(f"Неизвестные поля патча: {sorted(unknown)}")
 
-    if "name" in changes:
-        new_name = changes["name"]
+    # Название и раздел проверяем вместе: занятость определяет пара, и сменить
+    # позиции раздел на тот, где её тёзка уже стоит, — такой же конфликт, как
+    # переименование. Проверяем итоговую пару, а не то поле, которое пришло.
+    if "name" in changes or "category" in changes:
+        new_name = changes.get("name", item.name)
         if not new_name:
             raise ValueError("Название позиции не может быть пустым")
-        duplicate = await _find_active_by_name(session, venue_id, new_name)
+        new_category = (
+            (changes["category"] or "") if "category" in changes else item.category
+        )
+        duplicate = await _find_active(session, venue_id, new_name, new_category)
         if duplicate is not None and duplicate.id != item.id:
-            raise DuplicateMenuItemNameError(new_name)
+            raise DuplicateMenuItemNameError(new_name, new_category)
         item.name = new_name
-    if "category" in changes:
-        item.category = changes["category"] or ""
+        item.category = new_category
     if "price" in changes:
         if changes["price"] is None:
             raise ValueError("Цена не может быть пустой")
@@ -405,27 +421,34 @@ async def build_menu_import_plan(
     rejected = [row for row in parsed_rows if not row.is_valid]
     valid_rows = [row for row in parsed_rows if row.is_valid]
 
-    # Дубликат названия внутри самого файла — конфликт между строками, а не
-    # ошибка конкретной строки: держим первую, остальные явно отклоняем.
-    seen: dict[str, MenuCsvRow] = {}
+    # Дубликат внутри самого файла — конфликт между строками, а не ошибка
+    # конкретной строки: держим первую, остальные явно отклоняем. Дубликатом
+    # считается повтор пары «название + раздел»: одно название в разных
+    # разделах — это разные позиции меню с разной ценой, и обе нужны.
+    seen: dict[tuple[str, str], MenuCsvRow] = {}
     deduped: list[MenuCsvRow] = []
     for row in valid_rows:
-        earlier = seen.get(row.name)
+        ключ = (row.name, row.category or "")
+        earlier = seen.get(ключ)
         if earlier is not None:
+            где = f" в разделе «{row.category}»" if row.category else ""
             rejected.append(
                 replace(
                     row,
-                    errors=(f"дубликат названия в файле (уже строка {earlier.line_number})",),
+                    errors=(
+                        f"дубликат названия{где} в файле "
+                        f"(уже строка {earlier.line_number})",
+                    ),
                 )
             )
             continue
-        seen[row.name] = row
+        seen[ключ] = row
         deduped.append(row)
 
     to_create: list[MenuCsvRow] = []
     to_update: list[MenuImportPlanItem] = []
     for row in deduped:
-        existing = await _find_active_by_name(session, venue_id, row.name)
+        existing = await _find_active(session, venue_id, row.name, row.category)
         if existing is None:
             to_create.append(row)
         else:

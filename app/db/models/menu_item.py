@@ -40,10 +40,16 @@ class MenuItem(TimestampMixin, SoftDeleteMixin, Base):
             "spiciness IS NULL OR spiciness BETWEEN 0 AND 3", name="spiciness_range"
         ),
         CheckConstraint("price >= 0", name="price_non_negative"),
+        # Позицию опознаём по названию ВМЕСТЕ с разделом. В реальных меню одно
+        # название живёт в нескольких разделах с разной ценой и выходом («Чай
+        # облепиховый» в чайниках и порционно, «Салат Цезарь» с курицей и с
+        # креветками в разных группах). Уникальность по одному названию
+        # отклоняла такие строки при загрузке файла — заведение теряло позиции.
         Index(
-            "ux_menu_items_venue_name_active",
+            "ux_menu_items_venue_name_category_active",
             "venue_id",
             "name",
+            "category",
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
         ),
